@@ -120,17 +120,6 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let area = ctx.area();
     ctx.frame().render_widget(block, area);
 
-    // Surface loading and error state before the list, so an empty tab always
-    // explains itself rather than just looking broken.
-    let status = match library.tab {
-        Tab::Albums => status_line(library.albums.loading, &library.albums.error),
-        Tab::AllMusic => status_line(library.songs.loading, &library.songs.error),
-    };
-    if let Some(line) = status {
-        ctx.frame().render_widget(Paragraph::new(line), inner);
-        return;
-    }
-
     match library.tab {
         Tab::Albums => albums::ui(
             &mut ctx.with_area(inner),
@@ -147,16 +136,6 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
             ),
         ),
     }
-}
-
-fn status_line<'a>(loading: bool, error: &'a Option<String>) -> Option<Line<'a>> {
-    if let Some(error) = error {
-        return Some(Line::from(format!("  {error}")).style(Style::new().fg(Theme::ERROR)));
-    }
-    if loading {
-        return Some(Line::from("  Loading…").style(Theme::dim()));
-    }
-    None
 }
 
 fn draw_player(

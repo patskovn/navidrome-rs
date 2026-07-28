@@ -360,7 +360,26 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     ctx.frame()
         .render_widget(Paragraph::new(text).block(block), rows[0]);
 
-    list::ui(&mut ctx.with_area(rows[1]), &state.items);
+    // Loading and errors render where the list would be, never over the search
+    // field: the field must stay visible and editable while a query is running.
+    if let Some(line) = status_line(state.loading, &state.error) {
+        ctx.frame().render_widget(Paragraph::new(line), rows[1]);
+    } else {
+        list::ui(&mut ctx.with_area(rows[1]), &state.items);
+    }
+}
+
+/// Status shown in place of the list while a query runs or after it fails.
+fn status_line(loading: bool, error: &Option<String>) -> Option<ratatui::text::Line<'_>> {
+    use ratatui::style::Style;
+    use ratatui::text::Line;
+
+    use crate::ui::theme::Theme;
+
+    if let Some(error) = error {
+        return Some(Line::from(format!("  {error}")).style(Style::new().fg(Theme::ERROR)));
+    }
+    loading.then(|| Line::from("  Searching…").style(Theme::dim()))
 }
 
 /// Width of the info panel. Wide enough for a label/value pair without
