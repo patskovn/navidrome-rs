@@ -44,19 +44,6 @@ impl State {
     }
 }
 
-impl Detail {
-    /// "12 tracks · 48:31", as far as the tags allow.
-    pub fn summary(&self) -> String {
-        let total: i64 = self.tracks.iter().filter_map(|t| t.duration).sum();
-        let count = self.tracks.len();
-        if total > 0 {
-            format!("{count} tracks · {}", format_duration(total as u64))
-        } else {
-            format!("{count} tracks")
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row(pub Album);
 
@@ -94,8 +81,11 @@ pub enum Action {
     Loaded { items: Vec<Album>, generation: u64 },
     Failed(String),
     /// An album was chosen; its tracks are being fetched.
-    OpenAlbum(Album),
-    DetailLoaded { album: Album, tracks: Vec<Track> },
+    OpenAlbum(Box<Album>),
+    DetailLoaded {
+        album: Box<Album>,
+        tracks: Vec<Track>,
+    },
     CloseDetail,
     List(list::Action),
     Event(Event),
@@ -134,7 +124,7 @@ impl Reducer for Feature {
                         return Effect::none();
                     };
                     let _ = &for_enter;
-                    Effect::send(Action::OpenAlbum(album))
+                    Effect::send(Action::OpenAlbum(Box::new(album)))
                  }
                 list::Delegated::Toogle => Effect::none(),
             }
@@ -198,6 +188,7 @@ impl Reducer for Feature {
             }
 
             Action::OpenAlbum(album) => {
+                let album = *album;
                 state.detail = Some(Detail {
                     album: album.clone(),
                     loading: true,
@@ -206,13 +197,17 @@ impl Reducer for Feature {
                 let library = library.clone();
                 Effect::run(move |send| async move {
                     match library.album_tracks(&album.id).await {
-                        Ok(tracks) => send.send(Action::DetailLoaded { album, tracks }),
+                        Ok(tracks) => send.send(Action::DetailLoaded {
+                            album: Box::new(album),
+                            tracks,
+                        }),
                         Err(err) => send.send(Action::Failed(format!("{err:#}"))),
                     }
                 })
             }
 
             Action::DetailLoaded { album, tracks } => {
+                let album = *album;
                 // The user may have backed out while this was in flight.
                 if state.detail.as_ref().is_some_and(|d| d.album.id == album.id) {
                     state.detail = Some(Detail {
@@ -336,36 +331,30 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     list::ui(&mut ctx.with_area(rows[1]), &state.items);
 }
 
+/// Width of the info panel. Wide enough for a label/value pair without
+/// squeezing the track titles.
+const INFO_WIDTH: u16 = 34;
+
 fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
+
+    // No block of our own: the tab's border frames this, and its title carries
+    // the album name.
+    let columns =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(INFO_WIDTH)]).split(ctx.area());
+
+    draw_tracks(ctx, detail, columns[0]);
+    draw_info(ctx, detail, columns[1]);
+}
+
+fn draw_tracks(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
     use ratatui::style::Style;
-    use ratatui::text::Line;
-    use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget};
+    use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 
     use crate::ui::theme::Theme;
 
-    // No block here: the tab's own border already frames this, and its title
-    // carries the album name.
-    let rows = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(ctx.area());
-
-    let artist = detail.album.artist.clone().unwrap_or_else(|| "Unknown".into());
-    let year = detail.album.year.map(|y| format!("  ·  {y}")).unwrap_or_default();
-    let header = vec![
-        Line::from(format!(" {artist}{year}")),
-        Line::from(format!(
-            " {}",
-            if detail.loading {
-                "Loading…".to_string()
-            } else {
-                detail.summary()
-            }
-        ))
-        .style(Theme::dim()),
-        Line::from(" ↵ play from here   Esc back").style(Theme::dim()),
-    ];
-    ctx.frame().render_widget(Paragraph::new(header), rows[0]);
-
+    let width = area.width.saturating_sub(14) as usize;
     let items: Vec<ListItem> = detail
         .tracks
         .iter()
@@ -373,8 +362,8 @@ fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
         .map(|(i, track)| {
             let number = track.track_no.unwrap_or(i as i32 + 1);
             ListItem::from(format!(
-                "{number:>3}. {:<44} {}",
-                track.title,
+                "{number:>3}. {:<width$} {}",
+                truncate(&track.title, width),
                 track.duration_display()
             ))
         })
@@ -387,7 +376,131 @@ fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
     if !detail.tracks.is_empty() {
         list_state.select(Some(detail.selected));
     }
-    StatefulWidget::render(list, rows[1], ctx.frame().buffer_mut(), &mut list_state);
+    StatefulWidget::render(list, area, ctx.frame().buffer_mut(), &mut list_state);
+}
+
+fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
+    use ratatui::layout::Constraint;
+    use ratatui::layout::Layout;
+    use ratatui::style::Style;
+    use ratatui::text::Line;
+    use ratatui::text::Span;
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+
+    use crate::ui::theme::Theme;
+
+    let block = Block::default()
+        .borders(Borders::LEFT)
+        .border_type(BorderType::Plain)
+        .border_style(Theme::dim());
+    let inner = block.inner(area);
+    ctx.frame().render_widget(block, area);
+
+    // Square-ish cover area at the top, the rest for facts.
+    let cover_height = inner.height.min(inner.width / 2).min(12);
+    let rows =
+        Layout::vertical([Constraint::Length(cover_height), Constraint::Fill(1)]).split(inner);
+
+    draw_cover(ctx, detail, rows[0]);
+
+    let album = &detail.album;
+    let mut lines = vec![
+        Line::from(Span::styled(
+            album.name.clone(),
+            Style::new().fg(Theme::ACCENT).bold(),
+        )),
+        Line::from(album.artist.clone().unwrap_or_else(|| "Unknown artist".into())),
+        Line::from(""),
+    ];
+
+    let mut fact = |label: &str, value: Option<String>| {
+        if let Some(value) = value {
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label:<9}"), Theme::dim()),
+                Span::raw(value),
+            ]));
+        }
+    };
+
+    fact("Year", album.year.map(|y| y.to_string()));
+    fact("Genre", album.genre.clone());
+    fact(
+        "Tracks",
+        Some(if detail.tracks.is_empty() {
+            album.song_count.map(|c| c.to_string()).unwrap_or_default()
+        } else {
+            detail.tracks.len().to_string()
+        }),
+    );
+    fact(
+        "Length",
+        album
+            .duration
+            .or_else(|| {
+                let total: i64 = detail.tracks.iter().filter_map(|t| t.duration).sum();
+                (total > 0).then_some(total)
+            })
+            .map(|d| format_duration(d as u64)),
+    );
+    fact("Plays", album.play_count.map(|p| p.to_string()));
+
+    if detail.loading {
+        lines.push(Line::from(""));
+        lines.push(Line::from("Loading tracks…").style(Theme::dim()));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("↵ play from here").style(Theme::dim()));
+    lines.push(Line::from("Esc back").style(Theme::dim()));
+
+    ctx.frame().render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        rows[1],
+    );
+}
+
+/// Placeholder frame for artwork.
+///
+/// The server gives us a `cover_art` id and the SDK can fetch the bytes, but a
+/// terminal cannot render a JPEG without either a graphics protocol
+/// (`ratatui-image`) or half-block downscaling. Until that is wired up this
+/// reserves the space and says whether art exists.
+fn draw_cover(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
+    use ratatui::layout::Alignment;
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+    use crate::ui::theme::Theme;
+
+    if area.height < 3 {
+        return;
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Theme::dim());
+    let inner = block.inner(area);
+    ctx.frame().render_widget(block, area);
+
+    let label = if detail.album.cover_art.is_some() {
+        "♪"
+    } else {
+        "no art"
+    };
+    let pad = (inner.height.saturating_sub(1) / 2) as usize;
+    let text = format!("{}{label}", "\n".repeat(pad));
+    ctx.frame().render_widget(
+        Paragraph::new(text.replace("\\n", "\n")).alignment(Alignment::Center),
+        inner,
+    );
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return format!("{text:<width$}");
+    }
+    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 #[cfg(test)]
@@ -515,7 +628,7 @@ mod test {
     #[tokio::test]
     async fn enter_on_an_album_opens_it_rather_than_playing() {
         let mut store = store();
-        store.send(Action::OpenAlbum(album("1")), |s| {
+        store.send(Action::OpenAlbum(Box::new(album("1"))), |s| {
             s.detail = Some(Detail {
                 album: album("1"),
                 loading: true,
@@ -541,7 +654,7 @@ mod test {
         let tracks = vec![track("a"), track("b"), track("c")];
         store.send(
             Action::DetailLoaded {
-                album: album("1"),
+                album: Box::new(album("1")),
                 tracks: tracks.clone(),
             },
             |_| {},
@@ -549,7 +662,7 @@ mod test {
         // Nothing is open, so a stray load is ignored.
         assert!(store.state().detail.is_none());
 
-        store.send(Action::OpenAlbum(album("1")), |s| {
+        store.send(Action::OpenAlbum(Box::new(album("1"))), |s| {
             s.detail = Some(Detail {
                 album: album("1"),
                 loading: true,
@@ -559,7 +672,7 @@ mod test {
         store.settle();
         store.send(
             Action::DetailLoaded {
-                album: album("1"),
+                album: Box::new(album("1")),
                 tracks: tracks.clone(),
             },
             |s| {
@@ -584,7 +697,7 @@ mod test {
     #[tokio::test]
     async fn escape_closes_an_open_album() {
         let mut store = store();
-        store.send(Action::OpenAlbum(album("1")), |s| {
+        store.send(Action::OpenAlbum(Box::new(album("1"))), |s| {
             s.detail = Some(Detail {
                 album: album("1"),
                 loading: true,
@@ -601,7 +714,7 @@ mod test {
     #[tokio::test]
     async fn a_late_track_load_is_dropped_after_backing_out() {
         let mut store = store();
-        store.send(Action::OpenAlbum(album("1")), |s| {
+        store.send(Action::OpenAlbum(Box::new(album("1"))), |s| {
             s.detail = Some(Detail {
                 album: album("1"),
                 loading: true,
@@ -612,7 +725,7 @@ mod test {
         store.send(Action::CloseDetail, |s| s.detail = None);
         store.send(
             Action::DetailLoaded {
-                album: album("1"),
+                album: Box::new(album("1")),
                 tracks: vec![track("a")],
             },
             |_| {},

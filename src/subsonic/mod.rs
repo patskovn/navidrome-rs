@@ -22,6 +22,12 @@ pub struct Album {
     pub artist: Option<String>,
     pub year: Option<i32>,
     pub song_count: Option<i64>,
+    /// Total running time in seconds.
+    pub duration: Option<i64>,
+    pub genre: Option<String>,
+    pub play_count: Option<i64>,
+    /// Id to fetch artwork with; not the image itself.
+    pub cover_art: Option<String>,
 }
 
 /// A single track.

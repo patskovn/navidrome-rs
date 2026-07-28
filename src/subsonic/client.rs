@@ -36,6 +36,10 @@ fn album_from(value: AlbumId3) -> Album {
         artist: value.artist,
         year: value.year,
         song_count: value.song_count,
+        duration: value.duration,
+        genre: value.genre,
+        play_count: value.play_count,
+        cover_art: value.cover_art,
     }
 }
 
