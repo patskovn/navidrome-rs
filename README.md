@@ -10,7 +10,8 @@ is ported from it.
 ## What works
 
 - **Sign in** with server URL, username and password. Credentials are verified
-  before being saved; the password goes to the OS keychain, never to disk.
+  before being saved. Credentials live in `config.json`, written `0600`.
+  Set `NAVIDROME_PASSWORD` to override the stored one and keep it off disk.
 - **Tabs**: Albums and All Music, `Tab` to switch.
 - **Live search in both tabs.** The field is focused on arrival and takes every
   key except the three reserved ones; results update as you type, debounced at
@@ -80,7 +81,7 @@ idle app does no work.
 cargo run --release
 ```
 
-Config lives at `~/.config/navidrome-rs/config.json` (URL and username only),
+Config lives at `~/.config/navidrome-rs/config.json` (URL, username, password),
 cached audio under the platform cache directory, and a debug log at
 `<state-dir>/navidrome-rs/latest.log`.
 

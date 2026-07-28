@@ -143,7 +143,11 @@ impl Reducer for Feature {
                 state.error = None;
 
                 Effect::run(move |send| async move {
-                    let config = ServerConfig { url, username };
+                    let config = ServerConfig {
+                        url,
+                        username,
+                        password: password.clone(),
+                    };
                     // Verify before persisting, so a typo never becomes the
                     // saved configuration.
                     match crate::subsonic::OpenSubsonicLibrary::new(
@@ -155,12 +159,6 @@ impl Reducer for Feature {
                             use crate::subsonic::Library as _;
                             match library.ping().await {
                                 Ok(()) => {
-                                    if let Err(err) = config.store_password(&password) {
-                                        send.send(Action::Failed(format!(
-                                            "signed in, but could not save the password: {err:#}"
-                                        )));
-                                        return;
-                                    }
                                     if let Err(err) = config.save() {
                                         send.send(Action::Failed(format!("{err:#}")));
                                         return;

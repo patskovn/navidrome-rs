@@ -432,6 +432,7 @@ mod test {
             Action::SignedIn(ServerConfig {
                 url: "https://patskovn-pi".into(),
                 username: "nikita".into(),
+                password: "hunter2".into(),
             }),
             |s| s.session = Session::SignedIn(Box::default()),
         );

@@ -73,13 +73,11 @@ fn is_actionable(event: &Event) -> bool {
 /// sign-in screen, which is what a first run does anyway.
 fn restore_library(config: Option<&ServerConfig>) -> Option<SharedLibrary> {
     let config = config?;
-    let password = match config.password() {
-        Ok(password) => password,
-        Err(err) => {
-            log::warn!("no stored password for {}: {err:#}", config.username);
-            return None;
-        }
-    };
+    let password = config.password();
+    if password.is_empty() {
+        log::warn!("no password for {}; sign in again", config.username);
+        return None;
+    }
     match OpenSubsonicLibrary::new(&config.url, &config.username, &password) {
         Ok(library) => Some(Arc::new(library) as SharedLibrary),
         Err(err) => {

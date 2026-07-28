@@ -31,7 +31,7 @@ Do not leave new warnings behind.
 ```
 src/
 ├── main.rs          terminal setup, event loop, dependency wiring
-├── config.rs        server config (disk) + password (OS keychain)
+├── config.rs        server config, including the password, on disk
 ├── subsonic/        the server boundary
 │   ├── mod.rs       `Library` trait + app-owned domain types + test fake
 │   └── client.rs    `opensubsonic`-backed implementation
