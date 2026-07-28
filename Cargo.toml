@@ -1,0 +1,24 @@
+[package]
+name = "navidrome-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+async-trait = "0.1.91"
+crossterm = { version = "0.29", features = ["event-stream", "bracketed-paste"] }
+dirs = "6.0.0"
+futures = "0.3.33"
+keyring = "4.1.5"
+log = "0.4.33"
+opensubsonic = "0.4.0"
+ratatui = "0.30"
+rodio = "0.22.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+simplelog = "0.12.2"
+spectrum-analyzer = "1.8.0"
+stream-download = "0.24.2"
+tca-rs = "0.2"
+tokio = { version = "1.53.1", features = ["full"] }
+tui-textarea = { version = "0.8", package = "ratatui-textarea" }
