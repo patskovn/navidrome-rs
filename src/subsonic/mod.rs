@@ -104,6 +104,9 @@ pub trait Library: Send + Sync + 'static {
 
     async fn search(&self, query: &str) -> anyhow::Result<SearchResults>;
 
+    /// Encoded artwork bytes for a `cover_art` id.
+    async fn cover_art(&self, cover_art_id: &str) -> anyhow::Result<Vec<u8>>;
+
     /// A fully authenticated URL the audio layer can stream from directly.
     fn stream_url(&self, track_id: &str) -> anyhow::Result<String>;
 }
@@ -175,6 +178,11 @@ pub mod fake {
                 albums: self.albums.clone(),
                 tracks: self.tracks.clone(),
             })
+        }
+
+        async fn cover_art(&self, _cover_art_id: &str) -> anyhow::Result<Vec<u8>> {
+            self.record("cover_art");
+            anyhow::bail!("no artwork in the fake library")
         }
 
         fn stream_url(&self, track_id: &str) -> anyhow::Result<String> {

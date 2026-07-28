@@ -15,8 +15,9 @@ is ported from it.
 - **Live search in both tabs.** The field is focused on arrival and takes every
   key except the three reserved ones; results update as you type, debounced at
   250ms. An empty query falls back to the full listing.
-- **Album view**: Enter opens an album's tracks and details. Enter on a track
-  plays from there with the rest of the album queued behind it.
+- **Album view**: Enter opens an album — tracks on the left, cover art and
+  metadata on the right. Artwork is drawn as colour half-blocks, so it needs no
+  terminal graphics protocol.
 - **Playback** with play/pause, next/previous, and volume.
 - **Progressive streaming** — a track starts playing before it has finished
   downloading.

@@ -115,6 +115,9 @@ impl Library for NotSignedIn {
     async fn search(&self, _: &str) -> anyhow::Result<subsonic::SearchResults> {
         anyhow::bail!("not signed in")
     }
+    async fn cover_art(&self, _: &str) -> anyhow::Result<Vec<u8>> {
+        anyhow::bail!("not signed in")
+    }
     fn stream_url(&self, _: &str) -> anyhow::Result<String> {
         anyhow::bail!("not signed in")
     }

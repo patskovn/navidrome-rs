@@ -18,6 +18,7 @@ use crate::app::DEBOUNCE;
 use crate::app::PaneFocus;
 use crate::subsonic::SharedLibrary;
 use crate::subsonic::Track;
+use crate::ui::cover::Cover;
 use crate::ui::list;
 
 use crate::subsonic::Album;
@@ -31,6 +32,8 @@ pub struct Detail {
     pub tracks: Vec<Track>,
     pub selected: usize,
     pub loading: bool,
+    /// Decoded once when the album opens; the widget resamples from it.
+    pub cover: Option<Cover>,
 }
 
 impl State {
@@ -87,6 +90,7 @@ pub enum Action {
         tracks: Vec<Track>,
     },
     CloseDetail,
+    CoverLoaded { album_id: String, cover: Box<Cover> },
     List(list::Action),
     Event(Event),
     Delegated(Delegated),
@@ -196,6 +200,20 @@ impl Reducer for Feature {
                 });
                 let library = library.clone();
                 Effect::run(move |send| async move {
+                    // Artwork first: it is the slower of the two and the panel
+                    // has a hole in it until it lands.
+                    if let Some(art_id) = album.cover_art.clone() {
+                        match library.cover_art(&art_id).await {
+                            Ok(bytes) => match Cover::decode(&bytes) {
+                                Ok(cover) => send.send(Action::CoverLoaded {
+                                    album_id: album.id.clone(),
+                                    cover: Box::new(cover),
+                                }),
+                                Err(err) => log::warn!("undecodable artwork: {err:#}"),
+                            },
+                            Err(err) => log::warn!("no artwork for {}: {err:#}", album.id),
+                        }
+                    }
                     match library.album_tracks(&album.id).await {
                         Ok(tracks) => send.send(Action::DetailLoaded {
                             album: Box::new(album),
@@ -209,13 +227,27 @@ impl Reducer for Feature {
             Action::DetailLoaded { album, tracks } => {
                 let album = *album;
                 // The user may have backed out while this was in flight.
-                if state.detail.as_ref().is_some_and(|d| d.album.id == album.id) {
+                if let Some(existing) = &state.detail
+                    && existing.album.id == album.id
+                {
+                    let cover = existing.cover.clone();
                     state.detail = Some(Detail {
                         album,
                         tracks,
                         selected: 0,
                         loading: false,
+                        cover,
                     });
+                }
+                Effect::none()
+            }
+
+            Action::CoverLoaded { album_id, cover } => {
+                // Ignore artwork for an album the user has already left.
+                if let Some(detail) = &mut state.detail
+                    && detail.album.id == album_id
+                {
+                    detail.cover = Some(*cover);
                 }
                 Effect::none()
             }
@@ -481,15 +513,20 @@ fn draw_cover(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatu
     let inner = block.inner(area);
     ctx.frame().render_widget(block, area);
 
+    if let Some(cover) = &detail.cover {
+        ctx.frame()
+            .render_widget(crate::ui::cover::CoverWidget::new(cover), inner);
+        return;
+    }
+
     let label = if detail.album.cover_art.is_some() {
-        "♪"
+        "loading art…"
     } else {
         "no art"
     };
     let pad = (inner.height.saturating_sub(1) / 2) as usize;
-    let text = format!("{}{label}", "\n".repeat(pad));
     ctx.frame().render_widget(
-        Paragraph::new(text.replace("\\n", "\n")).alignment(Alignment::Center),
+        Paragraph::new(format!("{}{label}", "\n".repeat(pad))).alignment(Alignment::Center),
         inner,
     );
 }
@@ -681,6 +718,7 @@ mod test {
                     tracks: tracks.clone(),
                     selected: 0,
                     loading: false,
+                    cover: None,
                 })
             },
         );
@@ -692,6 +730,44 @@ mod test {
         store.send(Action::Event(key(KeyCode::Enter)), |_| {});
 
         assert_eq!(store.pending_len(), 1, "should have delegated a play");
+    }
+
+    /// Artwork for an album the user has already left must not appear on the
+    /// one they moved to.
+    #[tokio::test]
+    async fn artwork_for_a_different_album_is_ignored() {
+        use crate::ui::cover::Cover;
+
+        let mut store = store();
+        store.send(Action::OpenAlbum(Box::new(album("1"))), |s| {
+            s.detail = Some(Detail {
+                album: album("1"),
+                loading: true,
+                ..Default::default()
+            })
+        });
+        store.settle();
+
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
+            .write_to(
+                &mut std::io::Cursor::new(&mut png),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        let cover = Cover::decode(&png).unwrap();
+
+        store.send(
+            Action::CoverLoaded {
+                album_id: "a-different-album".into(),
+                cover: Box::new(cover),
+            },
+            |_| {},
+        );
+        assert!(
+            store.state().detail.as_ref().unwrap().cover.is_none(),
+            "artwork from another album must not land here"
+        );
     }
 
     #[tokio::test]

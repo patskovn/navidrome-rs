@@ -152,6 +152,17 @@ impl Library for OpenSubsonicLibrary {
         })
     }
 
+    async fn cover_art(&self, cover_art_id: &str) -> anyhow::Result<Vec<u8>> {
+        // 256px is plenty: the art is downscaled to a character grid anyway.
+        let bytes = self
+            .client
+            .get_cover_art(cover_art_id, Some(256))
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .with_context(|| format!("fetching artwork {cover_art_id}"))?;
+        Ok(bytes.to_vec())
+    }
+
     fn stream_url(&self, track_id: &str) -> anyhow::Result<String> {
         // `None` for bitrate and format asks the server for the original file,
         // untranscoded — bit-perfect, and what the cache stores.
