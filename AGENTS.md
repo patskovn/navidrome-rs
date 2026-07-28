@@ -164,6 +164,42 @@ Reducers are testable because the server sits behind the `Library` trait; use
   arriving for absent child state, which is normal when an in-flight effect
   races a state transition.
 
+## Next up: album cover art
+
+Decided but not built. The album info panel (`app/albums.rs::draw_cover`)
+currently reserves a square and reports only whether art exists.
+
+**Render as colour half-blocks.** Each cell draws `▀` with the foreground set
+to the upper pixel's RGB and the background to the lower pixel's, so one cell
+carries two real pixels and a 16×10 panel shows a 16×20 image. Covers keep
+their colour — this was decided explicitly, and is *not* subject to the
+monochrome rule that governs the visualiser. ASCII and braille ramps were
+considered and rejected: both encode intensity in the character, so they throw
+colour away by construction.
+
+What it needs:
+
+- `image` with `default-features = false, features = ["jpeg", "png"]`. Only a
+  decoder is required; resampling and drawing are ours.
+- The id is already plumbed through as `subsonic::Album::cover_art`; fetch with
+  the SDK's `get_cover_art(id, size)`.
+- Decode and resample **once** per opened album, cache the resulting pixel
+  grid, and redraw from that. The visualiser tick means this panel repaints up
+  to 20×/second while music plays — re-resampling per frame would be wasteful.
+- A **separate, small artwork cache**. Do not let thumbnails share the 2 GiB
+  audio budget in `audio/cache.rs`, or covers will evict tracks.
+
+Two traps:
+
+- **Aspect ratio.** Terminal cells are roughly 1:2 and half-blocks already
+  halve the vertical, so sampling must account for both or covers come out
+  stretched. Worth a test.
+- **Colour depth.** `Color::Rgb` is exact and fine on modern terminals. Only
+  add a 216-colour-cube fallback if a real terminal is found to mangle it.
+
+Follow the visualiser's example and add an `#[ignore]`d preview test that
+prints a rendered cover, so the result can be eyeballed without a live server.
+
 ## Not done yet
 
 No playlists, no artist browsing, no shuffle/repeat. Seek is implemented in the
