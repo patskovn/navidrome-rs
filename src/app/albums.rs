@@ -325,6 +325,64 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     list::ui(&mut ctx.with_area(rows[1]), &state.items);
 }
 
+fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
+    use ratatui::layout::Constraint;
+    use ratatui::layout::Layout;
+    use ratatui::style::Style;
+    use ratatui::text::Line;
+    use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget};
+
+    use crate::ui::theme::Theme;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(format!(" {} ", detail.album.name))
+        .title_bottom(" ↵ play from here · Esc back ");
+    let inner = block.inner(ctx.area());
+    let area = ctx.area();
+    ctx.frame().render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).split(inner);
+
+    let artist = detail.album.artist.clone().unwrap_or_else(|| "Unknown".into());
+    let year = detail.album.year.map(|y| format!("  ·  {y}")).unwrap_or_default();
+    let header = vec![
+        Line::from(format!("{artist}{year}")),
+        Line::from(if detail.loading {
+            "Loading…".to_string()
+        } else {
+            detail.summary()
+        })
+        .style(Theme::dim()),
+    ];
+    ctx.frame()
+        .render_widget(ratatui::widgets::Paragraph::new(header), rows[0]);
+
+    let items: Vec<ListItem> = detail
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let number = track.track_no.unwrap_or(i as i32 + 1);
+            ListItem::from(format!(
+                "{number:>3}. {:<44} {}",
+                track.title,
+                track.duration_display()
+            ))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
+        .highlight_symbol("▶ ");
+    let mut list_state = ListState::default();
+    if !detail.tracks.is_empty() {
+        list_state.select(Some(detail.selected));
+    }
+    StatefulWidget::render(list, rows[1], ctx.frame().buffer_mut(), &mut list_state);
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -585,63 +643,3 @@ mod test {
         assert_eq!(store.state().items.selected(), Some(0));
     }
 }
-
-fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
-    use ratatui::layout::Constraint;
-    use ratatui::layout::Layout;
-    use ratatui::style::Style;
-    use ratatui::text::Line;
-    use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget};
-
-    use crate::ui::theme::Theme;
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(format!(" {} ", detail.album.name))
-        .title_bottom(" ↵ play from here · Esc back ");
-    let inner = block.inner(ctx.area());
-    let area = ctx.area();
-    ctx.frame().render_widget(block, area);
-
-    let rows = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).split(inner);
-
-    let artist = detail.album.artist.clone().unwrap_or_else(|| "Unknown".into());
-    let year = detail.album.year.map(|y| format!("  ·  {y}")).unwrap_or_default();
-    let header = vec![
-        Line::from(format!("{artist}{year}")),
-        Line::from(if detail.loading {
-            "Loading…".to_string()
-        } else {
-            detail.summary()
-        })
-        .style(Theme::dim()),
-    ];
-    ctx.frame()
-        .render_widget(ratatui::widgets::Paragraph::new(header), rows[0]);
-
-    let items: Vec<ListItem> = detail
-        .tracks
-        .iter()
-        .enumerate()
-        .map(|(i, track)| {
-            let number = track.track_no.unwrap_or(i as i32 + 1);
-            ListItem::from(format!(
-                "{number:>3}. {:<44} {}",
-                track.title,
-                track.duration_display()
-            ))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
-        .highlight_symbol("▶ ");
-    let mut list_state = ListState::default();
-    if !detail.tracks.is_empty() {
-        list_state.select(Some(detail.selected));
-    }
-    StatefulWidget::render(list, rows[1], ctx.frame().buffer_mut(), &mut list_state);
-}
-
-use ratatui::style::Stylize as _;
