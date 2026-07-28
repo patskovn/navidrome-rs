@@ -114,6 +114,73 @@ pub trait Library: Send + Sync + 'static {
 /// Shared handle used by reducers.
 pub type SharedLibrary = Arc<dyn Library>;
 
+/// A [`Library`] whose backing client can be replaced at runtime.
+///
+/// Reducers are values built once, so the client they hold is fixed for the
+/// life of the store — but signing in has to install a real client where a
+/// signed-out stub was. This indirection is the join between the two. It lives
+/// in the `Feature`, never in `State`, so its interior mutability cannot break
+/// `TestStore` comparisons.
+pub struct SwappableLibrary {
+    inner: std::sync::RwLock<SharedLibrary>,
+}
+
+impl SwappableLibrary {
+    pub fn new(initial: SharedLibrary) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(initial),
+        }
+    }
+
+    /// Installs a new client. Takes effect on the next call.
+    pub fn set(&self, library: SharedLibrary) {
+        *self.inner.write().expect("library lock poisoned") = library;
+    }
+
+    /// Clones the current client out. The guard is released before any await,
+    /// which a std lock requires.
+    fn current(&self) -> SharedLibrary {
+        self.inner.read().expect("library lock poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl Library for SwappableLibrary {
+    async fn ping(&self) -> anyhow::Result<()> {
+        self.current().ping().await
+    }
+
+    async fn albums(&self, sort: AlbumSort, offset: u32, limit: u32) -> anyhow::Result<Vec<Album>> {
+        self.current().albums(sort, offset, limit).await
+    }
+
+    async fn album_tracks(&self, album_id: &str) -> anyhow::Result<Vec<Track>> {
+        let library = self.current();
+        let id = album_id.to_string();
+        library.album_tracks(&id).await
+    }
+
+    async fn all_tracks(&self, offset: u32, limit: u32) -> anyhow::Result<Vec<Track>> {
+        self.current().all_tracks(offset, limit).await
+    }
+
+    async fn search(&self, query: &str) -> anyhow::Result<SearchResults> {
+        let library = self.current();
+        let query = query.to_string();
+        library.search(&query).await
+    }
+
+    async fn cover_art(&self, cover_art_id: &str) -> anyhow::Result<Vec<u8>> {
+        let library = self.current();
+        let id = cover_art_id.to_string();
+        library.cover_art(&id).await
+    }
+
+    fn stream_url(&self, track_id: &str) -> anyhow::Result<String> {
+        self.current().stream_url(track_id)
+    }
+}
+
 #[cfg(test)]
 pub mod fake {
     use super::*;

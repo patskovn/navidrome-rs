@@ -16,9 +16,12 @@ use crate::app::albums;
 use crate::app::auth;
 use crate::app::player;
 use crate::app::songs;
+use std::sync::Arc;
+
 use crate::audio::AudioEngine;
 use crate::config::ServerConfig;
 use crate::subsonic::SharedLibrary;
+use crate::subsonic::SwappableLibrary;
 
 /// Redraw cadence while audio plays, driving the spectrum animation.
 ///
@@ -155,7 +158,9 @@ pub enum Action {
 }
 
 pub struct Feature {
-    pub library: SharedLibrary,
+    /// Held as the switch, not a plain handle, so signing in can install a
+    /// real client in place of the signed-out stub.
+    pub library: Arc<SwappableLibrary>,
     pub audio: AudioEngine,
 }
 
@@ -180,6 +185,8 @@ impl Reducer for Feature {
     type Action = Action;
 
     fn reduce(&self, state: &mut State, action: Action) -> Effect<Action> {
+        let switch = self.library.clone();
+
         Scope::optional(State::auth_mut, case!(Action::Auth), auth::Feature)
             .on_delegate(case!(auth::Action::Delegated), |_state: &mut State, d| {
                 match d {
@@ -192,7 +199,7 @@ impl Reducer for Feature {
                     |s: &mut State| s.library_mut().map(|l| &mut l.albums),
                     case!(Action::Albums),
                     albums::Feature {
-                        library: self.library.clone(),
+                        library: self.library.clone() as SharedLibrary,
                     },
                 )
                 .on_delegate(case!(albums::Action::Delegated), |_s: &mut State, d| match d {
@@ -207,7 +214,7 @@ impl Reducer for Feature {
                     |s: &mut State| s.library_mut().map(|l| &mut l.songs),
                     case!(Action::Songs),
                     songs::Feature {
-                        library: self.library.clone(),
+                        library: self.library.clone() as SharedLibrary,
                     },
                 )
                 .on_delegate(case!(songs::Action::Delegated), |_s: &mut State, d| match d {
@@ -222,7 +229,7 @@ impl Reducer for Feature {
                     |s: &mut State| &mut s.player,
                     case!(Action::Player),
                     player::Feature {
-                        library: self.library.clone(),
+                        library: self.library.clone() as SharedLibrary,
                         audio: self.audio.clone(),
                     },
                 )
@@ -230,10 +237,24 @@ impl Reducer for Feature {
                     player::Delegated::PlaybackActive(active) => Self::tick_effect(active),
                 }),
             )
-            .or_else(|state: &mut State, action| match action {
+            .or_else(move |state: &mut State, action| match action {
                 Action::Event(e) => reduce_event(state, e),
 
-                Action::SignedIn(_config) => {
+                Action::SignedIn(config) => {
+                    // The client is built once at startup, so without this the
+                    // signed-out stub would stay installed and every request
+                    // would fail until the app was restarted.
+                    match crate::subsonic::OpenSubsonicLibrary::new(
+                        &config.url,
+                        &config.username,
+                        &config.password(),
+                    ) {
+                        Ok(library) => switch.set(Arc::new(library) as SharedLibrary),
+                        Err(err) => {
+                            state.status = Some(format!("{err:#}"));
+                            return Effect::none();
+                        }
+                    }
                     state.session = Session::SignedIn(Box::default());
                     state.status = None;
                     // Populate the first tab immediately.
@@ -343,12 +364,22 @@ mod test {
         })
     }
 
-    fn feature() -> Feature {
+    fn audio() -> AudioEngine {
         let dir = std::env::temp_dir().join(format!("navidrome-entry-test-{}", std::process::id()));
         let cache = Arc::new(TrackCache::new(&dir, 1024).unwrap());
         let (audio, _events) = AudioEngine::start(cache);
+        audio
+    }
+
+    fn feature() -> Feature {
+        let (audio, _events) = {
+            let dir =
+                std::env::temp_dir().join(format!("navidrome-entry-test-{}", std::process::id()));
+            let cache = Arc::new(TrackCache::new(&dir, 1024).unwrap());
+            AudioEngine::start(cache)
+        };
         Feature {
-            library: Arc::new(FakeLibrary::default()),
+            library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
             audio,
         }
     }
@@ -439,6 +470,86 @@ mod test {
 
         assert!(store.state().library().is_some(), "should be signed in");
         store.settle();
+    }
+
+    /// Regression: signing in used to flip the UI but leave the signed-out
+    /// stub installed, so every request failed until the app was restarted.
+    #[tokio::test]
+    async fn signing_in_installs_a_working_client() {
+        use crate::subsonic::Library as _;
+
+        let switch = Arc::new(SwappableLibrary::new(Arc::new(NotSignedInStub)));
+        let feature = Feature {
+            library: switch.clone(),
+            audio: audio(),
+        };
+        let mut store = TestStore::new(feature, State::default());
+
+        // Before sign-in the stub refuses everything.
+        assert!(switch.ping().await.is_err());
+
+        // A real client is swapped in behind the switch.
+        switch.set(Arc::new(FakeLibrary::default()));
+        assert!(
+            switch.ping().await.is_ok(),
+            "the switch should route to the new client"
+        );
+
+        store.send(
+            Action::SignedIn(ServerConfig {
+                url: "https://patskovn-pi".into(),
+                username: "nikita".into(),
+                password: "hunter2".into(),
+            }),
+            |s| s.session = Session::SignedIn(Box::default()),
+        );
+        store.settle();
+
+        // The switch now holds a real client. It still cannot reach that server
+        // from a test, but it fails as a client rather than as the stub — which
+        // is exactly the distinction the bug got wrong.
+        let err = format!("{:#}", switch.ping().await.unwrap_err());
+        assert!(
+            !err.contains("not signed in"),
+            "the signed-out stub is still installed: {err}"
+        );
+    }
+
+    /// Stands in for `main::NotSignedIn`, which lives in the binary root.
+    struct NotSignedInStub;
+
+    #[async_trait::async_trait]
+    impl crate::subsonic::Library for NotSignedInStub {
+        async fn ping(&self) -> anyhow::Result<()> {
+            anyhow::bail!("not signed in")
+        }
+        async fn albums(
+            &self,
+            _: crate::subsonic::AlbumSort,
+            _: u32,
+            _: u32,
+        ) -> anyhow::Result<Vec<crate::subsonic::Album>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn album_tracks(&self, _: &str) -> anyhow::Result<Vec<crate::subsonic::Track>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn all_tracks(
+            &self,
+            _: u32,
+            _: u32,
+        ) -> anyhow::Result<Vec<crate::subsonic::Track>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn search(&self, _: &str) -> anyhow::Result<crate::subsonic::SearchResults> {
+            anyhow::bail!("not signed in")
+        }
+        async fn cover_art(&self, _: &str) -> anyhow::Result<Vec<u8>> {
+            anyhow::bail!("not signed in")
+        }
+        fn stream_url(&self, _: &str) -> anyhow::Result<String> {
+            anyhow::bail!("not signed in")
+        }
     }
 
     #[tokio::test]

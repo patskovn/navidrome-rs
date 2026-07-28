@@ -35,6 +35,7 @@ use crate::config::ServerConfig;
 use crate::subsonic::Library;
 use crate::subsonic::OpenSubsonicLibrary;
 use crate::subsonic::SharedLibrary;
+use crate::subsonic::SwappableLibrary;
 use crate::ui::visualizer::Spectrum;
 
 fn configure_logger() -> anyhow::Result<()> {
@@ -129,7 +130,9 @@ where
     let saved = ServerConfig::load();
     let restored = restore_library(saved.as_ref());
     let signed_in = restored.is_some();
-    let library = restored.unwrap_or_else(|| Arc::new(NotSignedIn) as SharedLibrary);
+    let library = Arc::new(SwappableLibrary::new(
+        restored.unwrap_or_else(|| Arc::new(NotSignedIn) as SharedLibrary),
+    ));
 
     let cache = Arc::new(TrackCache::new(
         config::cache_dir()?,
