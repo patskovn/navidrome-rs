@@ -426,15 +426,10 @@ fn draw_tracks(
         .map(|(i, track)| {
             let number = track.track_no.unwrap_or(i as i32 + 1);
             let sounding = playing.is_some_and(|id| id == track.id);
-            // A note replaces the track number on the sounding row, so the
-            // marker costs no width and the columns stay aligned.
-            let lead = if sounding {
-                "  ♪".to_string()
-            } else {
-                format!("{number:>3}")
-            };
+            // Colour alone marks the sounding row: the track number stays put,
+            // so nothing about the row changes shape as playback moves.
             let item = ListItem::from(format!(
-                "{lead}. {:<width$} {}",
+                "{number:>3}. {:<width$} {}",
                 truncate(&track.title, width),
                 track.duration_display()
             ));
