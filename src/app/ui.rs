@@ -109,7 +109,13 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(format!(" {} ", library.tab.title()));
+        .title(format!(
+            " {} ",
+            match library.tab {
+                Tab::Albums => library.albums.tab_title(),
+                Tab::AllMusic => library.tab.title().to_string(),
+            }
+        ));
     let inner = block.inner(ctx.area());
     let area = ctx.area();
     ctx.frame().render_widget(block, area);

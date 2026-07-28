@@ -33,6 +33,17 @@ pub struct Detail {
     pub loading: bool,
 }
 
+impl State {
+    /// Title for the enclosing tab block. An open album renames the tab rather
+    /// than drawing a window of its own.
+    pub fn tab_title(&self) -> String {
+        match &self.detail {
+            Some(detail) => format!("Albums - {}", detail.album.name),
+            None => "Albums".to_string(),
+        }
+    }
+}
+
 impl Detail {
     /// "12 tracks · 48:31", as far as the tags allow.
     pub fn summary(&self) -> String {
@@ -330,34 +341,30 @@ fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
     use ratatui::layout::Layout;
     use ratatui::style::Style;
     use ratatui::text::Line;
-    use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget};
+    use ratatui::widgets::{List, ListItem, ListState, Paragraph, StatefulWidget};
 
     use crate::ui::theme::Theme;
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(format!(" {} ", detail.album.name))
-        .title_bottom(" ↵ play from here · Esc back ");
-    let inner = block.inner(ctx.area());
-    let area = ctx.area();
-    ctx.frame().render_widget(block, area);
-
-    let rows = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).split(inner);
+    // No block here: the tab's own border already frames this, and its title
+    // carries the album name.
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(ctx.area());
 
     let artist = detail.album.artist.clone().unwrap_or_else(|| "Unknown".into());
     let year = detail.album.year.map(|y| format!("  ·  {y}")).unwrap_or_default();
     let header = vec![
-        Line::from(format!("{artist}{year}")),
-        Line::from(if detail.loading {
-            "Loading…".to_string()
-        } else {
-            detail.summary()
-        })
+        Line::from(format!(" {artist}{year}")),
+        Line::from(format!(
+            " {}",
+            if detail.loading {
+                "Loading…".to_string()
+            } else {
+                detail.summary()
+            }
+        ))
         .style(Theme::dim()),
+        Line::from(" ↵ play from here   Esc back").style(Theme::dim()),
     ];
-    ctx.frame()
-        .render_widget(ratatui::widgets::Paragraph::new(header), rows[0]);
+    ctx.frame().render_widget(Paragraph::new(header), rows[0]);
 
     let items: Vec<ListItem> = detail
         .tracks
