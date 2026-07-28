@@ -65,8 +65,13 @@ impl Tab {
 /// is why the child features are scoped optionally.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Session {
-    SignedOut(auth::State<'static>),
-    SignedIn(Library),
+    // Both variants are boxed: the sign-in form is three text areas and
+    // `Library` is three tabs of state, so either one unboxed would size every
+    // `Session` (and therefore every `State`) to the larger of them.
+    SignedOut(Box<auth::State<'static>>),
+    // Boxed: `Library` holds three tabs' worth of state and dwarfs the
+    // sign-in form, so an unboxed enum would size every `Session` to it.
+    SignedIn(Box<Library>),
 }
 
 #[derive(Debug, PartialEq, Clone, Default)]
@@ -87,7 +92,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
-            session: Session::SignedOut(auth::State::default()),
+            session: Session::SignedOut(Box::default()),
             player: player::State::new(),
             status: None,
         }
@@ -99,7 +104,7 @@ impl State {
     pub fn restored(config: Option<ServerConfig>) -> Self {
         match config {
             Some(_) => Self {
-                session: Session::SignedIn(Library::default()),
+                session: Session::SignedIn(Box::default()),
                 ..Default::default()
             },
             None => Self::default(),
@@ -108,28 +113,28 @@ impl State {
 
     fn library_mut(&mut self) -> Option<&mut Library> {
         match &mut self.session {
-            Session::SignedIn(library) => Some(library),
+            Session::SignedIn(library) => Some(library.as_mut()),
             Session::SignedOut(_) => None,
         }
     }
 
     pub fn library(&self) -> Option<&Library> {
         match &self.session {
-            Session::SignedIn(library) => Some(library),
+            Session::SignedIn(library) => Some(library.as_ref()),
             Session::SignedOut(_) => None,
         }
     }
 
     fn auth_mut(&mut self) -> Option<&mut auth::State<'static>> {
         match &mut self.session {
-            Session::SignedOut(auth) => Some(auth),
+            Session::SignedOut(auth) => Some(auth.as_mut()),
             Session::SignedIn(_) => None,
         }
     }
 
     pub fn auth(&self) -> Option<&auth::State<'static>> {
         match &self.session {
-            Session::SignedOut(auth) => Some(auth),
+            Session::SignedOut(auth) => Some(auth.as_ref()),
             Session::SignedIn(_) => None,
         }
     }
@@ -180,7 +185,7 @@ impl Reducer for Feature {
             .on_delegate(case!(auth::Action::Delegated), |_state: &mut State, d| {
                 match d {
                     auth::Delegated::SignedIn(config) => Effect::send(Action::SignedIn(config)),
-                    auth::Delegated::Noop(_) => Effect::none(),
+                    auth::Delegated::Noop => Effect::none(),
                 }
             })
             .then(
@@ -195,7 +200,7 @@ impl Reducer for Feature {
                     albums::Delegated::Play(tracks) => Effect::send(Action::Player(
                         player::Action::SetQueue { tracks, index: 0 },
                     )),
-                    albums::Delegated::Noop(_) => Effect::none(),
+                    albums::Delegated::Noop => Effect::none(),
                 }),
             )
             .then(
@@ -210,7 +215,7 @@ impl Reducer for Feature {
                     songs::Delegated::Play { tracks, index } => {
                         Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
                     }
-                    songs::Delegated::Noop(_) => Effect::none(),
+                    songs::Delegated::Noop => Effect::none(),
                 }),
             )
             .then(
@@ -225,7 +230,7 @@ impl Reducer for Feature {
                     search::Delegated::Play { tracks, index } => {
                         Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
                     }
-                    search::Delegated::Noop(_) => Effect::none(),
+                    search::Delegated::Noop => Effect::none(),
                 }),
             )
             .then(
@@ -245,7 +250,7 @@ impl Reducer for Feature {
                 Action::Event(e) => reduce_event(state, e),
 
                 Action::SignedIn(_config) => {
-                    state.session = Session::SignedIn(Library::default());
+                    state.session = Session::SignedIn(Box::default());
                     state.status = None;
                     // Populate the first tab immediately.
                     Effect::send(Action::Albums(albums::Action::Reload))
@@ -375,7 +380,7 @@ mod test {
         TestStore::new(
             feature(),
             State {
-                session: Session::SignedIn(Library::default()),
+                session: Session::SignedIn(Box::default()),
                 ..Default::default()
             },
         )
@@ -459,7 +464,7 @@ mod test {
                 url: "https://patskovn-pi".into(),
                 username: "nikita".into(),
             }),
-            |s| s.session = Session::SignedIn(Library::default()),
+            |s| s.session = Session::SignedIn(Box::default()),
         );
 
         assert!(store.state().library().is_some(), "should be signed in");

@@ -96,7 +96,9 @@ pub enum Action {
 pub enum Delegated {
     /// Credentials verified and persisted.
     SignedIn(ServerConfig),
-    Noop(Event),
+    /// The child did not consume the key. `entry` handles global keys before
+    /// routing, so the event itself is not carried back up.
+    Noop,
 }
 
 pub struct Feature;
@@ -128,7 +130,7 @@ impl Reducer for Feature {
                         _ => {}
                     }
                 }
-                Effect::send(Action::Delegated(Delegated::Noop(e)))
+                Effect::send(Action::Delegated(Delegated::Noop))
             }
 
             Action::Submit => {

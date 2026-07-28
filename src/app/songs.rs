@@ -55,7 +55,9 @@ pub enum Action {
 
 #[derive(Debug)]
 pub enum Delegated {
-    Noop(Event),
+    /// The child did not consume the key. `entry` handles global keys before
+    /// routing, so the event itself is not carried back up.
+    Noop,
     /// Play the whole visible list, starting at this index.
     Play { tracks: Vec<Track>, index: usize },
 }
@@ -77,7 +79,7 @@ impl Reducer for Feature {
             list::ListFeature::<Row>::default(),
         )
         .on_delegate(case!(list::Action::Delegated), |state: &mut State, d| match d {
-            list::Delegated::Noop(e) => Effect::send(Action::Delegated(Delegated::Noop(e))),
+            list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
             list::Delegated::Enter(index) => {
                 let tracks: Vec<Track> = state.tracks.items.iter().map(|r| r.0.clone()).collect();
                 if tracks.is_empty() {

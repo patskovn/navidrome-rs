@@ -59,7 +59,9 @@ pub enum Action {
 
 #[derive(Debug)]
 pub enum Delegated {
-    Noop(Event),
+    /// The child did not consume the key. `entry` handles global keys before
+    /// routing, so the event itself is not carried back up.
+    Noop,
     Play { tracks: Vec<Track>, index: usize },
 }
 
@@ -102,8 +104,8 @@ impl Reducer for Feature {
                     state.editing = false;
                     Effect::none()
                 }
-                single_line_input::Delegated::Noop(e) => {
-                    Effect::send(Action::Delegated(Delegated::Noop(e)))
+                single_line_input::Delegated::Noop(_) => {
+                    Effect::send(Action::Delegated(Delegated::Noop))
                 }
             },
         )
@@ -115,7 +117,7 @@ impl Reducer for Feature {
             )
             .on_delegate(case!(list::Action::Delegated), |state: &mut Self::State, d| {
                 match d {
-                    list::Delegated::Noop(e) => Effect::send(Action::Delegated(Delegated::Noop(e))),
+                    list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
                     list::Delegated::Enter(index) => {
                         let tracks: Vec<Track> =
                             state.results.items.iter().map(|r| r.0.clone()).collect();
