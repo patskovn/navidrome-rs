@@ -510,31 +510,23 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
     );
 }
 
-/// Placeholder frame for artwork.
+/// Draws the artwork, or a quiet note in its place.
 ///
-/// The server gives us a `cover_art` id and the SDK can fetch the bytes, but a
-/// terminal cannot render a JPEG without either a graphics protocol
-/// (`ratatui-image`) or half-block downscaling. Until that is wired up this
-/// reserves the space and says whether art exists.
+/// No frame of its own: the image is the shape, and a border around it just
+/// competes with the panel rule and the tab's own edge.
 fn draw_cover(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
     use ratatui::layout::Alignment;
-    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+    use ratatui::widgets::Paragraph;
 
     use crate::ui::theme::Theme;
 
-    if area.height < 3 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Theme::dim());
-    let inner = block.inner(area);
-    ctx.frame().render_widget(block, area);
 
     if let Some(cover) = &detail.cover {
         ctx.frame()
-            .render_widget(crate::ui::cover::CoverWidget::new(cover), inner);
+            .render_widget(crate::ui::cover::CoverWidget::new(cover), area);
         return;
     }
 
@@ -543,10 +535,12 @@ fn draw_cover(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatu
     } else {
         "no art"
     };
-    let pad = (inner.height.saturating_sub(1) / 2) as usize;
+    let pad = (area.height.saturating_sub(1) / 2) as usize;
     ctx.frame().render_widget(
-        Paragraph::new(format!("{}{label}", "\n".repeat(pad))).alignment(Alignment::Center),
-        inner,
+        Paragraph::new(format!("{}{label}", "\n".repeat(pad)))
+            .alignment(Alignment::Center)
+            .style(Theme::dim()),
+        area,
     );
 }
 
