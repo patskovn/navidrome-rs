@@ -15,7 +15,6 @@ use tca::case;
 use crate::app::albums;
 use crate::app::auth;
 use crate::app::player;
-use crate::app::search;
 use crate::app::songs;
 use crate::audio::AudioEngine;
 use crate::config::ServerConfig;
@@ -37,26 +36,15 @@ pub enum Tab {
     #[default]
     Albums,
     AllMusic,
-    Search,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Albums, Tab::AllMusic, Tab::Search];
+    pub const ALL: [Tab; 2] = [Tab::Albums, Tab::AllMusic];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Albums => "Albums",
             Tab::AllMusic => "All Music",
-            Tab::Search => "Search",
-        }
-    }
-
-    fn from_digit(c: char) -> Option<Self> {
-        match c {
-            '1' => Some(Tab::Albums),
-            '2' => Some(Tab::AllMusic),
-            '3' => Some(Tab::Search),
-            _ => None,
         }
     }
 }
@@ -79,7 +67,6 @@ pub struct Library {
     pub tab: Tab,
     pub albums: albums::State,
     pub songs: songs::State,
-    pub search: search::State<'static>,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -109,6 +96,19 @@ impl State {
             },
             None => Self::default(),
         }
+    }
+
+    /// Whether the active tab's search field holds the keyboard. While it
+    /// does, single-key transport shortcuts are text, not commands.
+    pub fn search_focused(&self) -> bool {
+        let Some(library) = self.library() else {
+            return false;
+        };
+        let focus = match library.tab {
+            Tab::Albums => library.albums.focus,
+            Tab::AllMusic => library.songs.focus,
+        };
+        focus == crate::app::PaneFocus::Search
     }
 
     fn library_mut(&mut self) -> Option<&mut Library> {
@@ -148,7 +148,6 @@ pub enum Action {
     Auth(auth::Action),
     Albums(albums::Action),
     Songs(songs::Action),
-    Search(search::Action),
     Player(player::Action),
     /// Repaint request while audio plays.
     Tick,
@@ -219,21 +218,6 @@ impl Reducer for Feature {
                 }),
             )
             .then(
-                Scope::optional(
-                    |s: &mut State| s.library_mut().map(|l| &mut l.search),
-                    case!(Action::Search),
-                    search::Feature {
-                        library: self.library.clone(),
-                    },
-                )
-                .on_delegate(case!(search::Action::Delegated), |_s: &mut State, d| match d {
-                    search::Delegated::Play { tracks, index } => {
-                        Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
-                    }
-                    search::Delegated::Noop => Effect::none(),
-                }),
-            )
-            .then(
                 Scope::new(
                     |s: &mut State| &mut s.player,
                     case!(Action::Player),
@@ -265,7 +249,6 @@ impl Reducer for Feature {
                 Action::Auth(_)
                 | Action::Albums(_)
                 | Action::Songs(_)
-                | Action::Search(_)
                 | Action::Player(_) => unreachable!("claimed by a scope"),
             })
             .reduce(state, action)
@@ -289,12 +272,21 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
         return Effect::send(Action::Auth(auth::Action::Event(event)));
     }
 
-    let editing_search = state
-        .library()
-        .is_some_and(|l| l.tab == Tab::Search && l.search.editing);
+    // Tab always switches tabs, even from the search field.
+    if key.code == KeyCode::Tab {
+        if let Some(library) = state.library_mut() {
+            let index = Tab::ALL.iter().position(|t| *t == library.tab).unwrap_or(0);
+            library.tab = Tab::ALL[(index + 1) % Tab::ALL.len()];
+        }
+        return load_if_empty(state);
+    }
+    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
+        return Effect::send(Action::Quit);
+    }
 
-    // While typing a query, only Ctrl-C escapes: a bare `q` is a search term.
-    if !editing_search {
+    // Everything else is text while the search field has focus: a bare `q` is
+    // a search term, not quit.
+    if !state.search_focused() {
         match key.code {
             KeyCode::Char('q') => return Effect::send(Action::Quit),
             KeyCode::Char(' ') => {
@@ -308,42 +300,27 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             KeyCode::Char('-') => {
                 return Effect::send(Action::Player(player::Action::VolumeDown));
             }
-            KeyCode::Char(c) if Tab::from_digit(c).is_some() => {
-                let tab = Tab::from_digit(c).expect("checked above");
-                if let Some(library) = state.library_mut() {
-                    library.tab = tab;
-                }
-                // Load the tab's contents the first time it is opened.
-                return match tab {
-                    Tab::Albums if state.library().is_some_and(|l| l.albums.albums.items.is_empty()) => {
-                        Effect::send(Action::Albums(albums::Action::Reload))
-                    }
-                    Tab::AllMusic if state.library().is_some_and(|l| l.songs.tracks.items.is_empty()) => {
-                        Effect::send(Action::Songs(songs::Action::Reload))
-                    }
-                    _ => Effect::none(),
-                };
-            }
-            KeyCode::Tab => {
-                if let Some(library) = state.library_mut() {
-                    let index = Tab::ALL.iter().position(|t| *t == library.tab).unwrap_or(0);
-                    library.tab = Tab::ALL[(index + 1) % Tab::ALL.len()];
-                }
-                return Effect::none();
-            }
             _ => {}
         }
-    }
-
-    if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
-        return Effect::send(Action::Quit);
     }
 
     match state.library().map(|l| l.tab) {
         Some(Tab::Albums) => Effect::send(Action::Albums(albums::Action::Event(event))),
         Some(Tab::AllMusic) => Effect::send(Action::Songs(songs::Action::Event(event))),
-        Some(Tab::Search) => Effect::send(Action::Search(search::Action::Event(event))),
         None => Effect::none(),
+    }
+}
+
+/// Loads a tab's contents the first time it is opened.
+fn load_if_empty(state: &mut State) -> Effect<Action> {
+    match state.library().map(|l| l.tab) {
+        Some(Tab::Albums) if state.library().is_some_and(|l| l.albums.items.items.is_empty()) => {
+            Effect::send(Action::Albums(albums::Action::Reload))
+        }
+        Some(Tab::AllMusic) if state.library().is_some_and(|l| l.songs.items.items.is_empty()) => {
+            Effect::send(Action::Songs(songs::Action::Reload))
+        }
+        _ => Effect::none(),
     }
 }
 
@@ -387,70 +364,62 @@ mod test {
     }
 
     #[tokio::test]
-    async fn digits_switch_tabs() {
+    async fn tab_cycles_between_the_two_tabs() {
         let mut store = signed_in_store();
-
-        store.send(Action::Event(key(KeyCode::Char('2'))), |s| {
-            if let Session::SignedIn(l) = &mut s.session {
-                l.tab = Tab::AllMusic;
-            }
-        });
-        store.settle();
-        assert_eq!(store.state().library().unwrap().tab, Tab::AllMusic);
-    }
-
-    #[tokio::test]
-    async fn tab_cycles_through_every_tab() {
-        let mut store = signed_in_store();
-        for expected in [Tab::AllMusic, Tab::Search, Tab::Albums] {
+        for expected in [Tab::AllMusic, Tab::Albums, Tab::AllMusic] {
             store.send(Action::Event(key(KeyCode::Tab)), |s| {
                 if let Session::SignedIn(l) = &mut s.session {
                     l.tab = expected;
                 }
             });
             store.settle();
+            assert_eq!(store.state().library().unwrap().tab, expected);
         }
-        assert_eq!(store.state().library().unwrap().tab, Tab::Albums);
+    }
+
+    /// The search field owns the keyboard on arrival, so single-key transport
+    /// shortcuts must be treated as text rather than commands.
+    #[tokio::test]
+    async fn letters_type_into_search_instead_of_triggering_shortcuts() {
+        let mut store = signed_in_store();
+        assert!(store.state().search_focused(), "search should start focused");
+
+        for c in ['q', 'n', 'p', ' '] {
+            store.send(Action::Event(key(KeyCode::Char(c))), |_| {});
+            store.settle();
+        }
+
+        assert_eq!(store.state().library().unwrap().albums.query, "qnp ");
+        assert!(!store.state().player.is_playing, "space must not have played");
     }
 
     #[tokio::test]
-    async fn space_toggles_playback() {
+    async fn arrows_move_focus_between_the_field_and_the_list() {
         let mut store = signed_in_store();
+        assert!(store.state().search_focused());
+
+        store.send(Action::Event(key(KeyCode::Down)), |_| {});
+        store.settle();
+        assert!(!store.state().search_focused(), "Down should enter the list");
+
+        store.send(Action::Event(key(KeyCode::Up)), |_| {});
+        store.settle();
+        assert!(store.state().search_focused(), "Up should return to the field");
+    }
+
+    /// With focus in the list, the shortcuts are commands again.
+    #[tokio::test]
+    async fn shortcuts_work_once_focus_leaves_the_field() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(key(KeyCode::Down)), |_| {});
+        store.settle();
+
         store.send(Action::Event(key(KeyCode::Char(' '))), |_| {});
-        // Nothing is queued, so the toggle is a no-op rather than a crash.
         store.settle();
-        assert!(!store.state().player.is_playing);
-    }
-
-    #[tokio::test]
-    async fn q_quits_but_not_while_typing_a_search() {
-        let mut store = signed_in_store();
-        store.send(Action::Event(key(KeyCode::Char('3'))), |s| {
-            if let Session::SignedIn(l) = &mut s.session {
-                l.tab = Tab::Search;
-            }
-        });
-        store.settle();
-
-        // `/` is routed to the search feature, which is what flips `editing`;
-        // the root reducer only forwards it, so settle before asserting.
-        store.send(Action::Event(key(KeyCode::Char('/'))), |_| {});
-        store.settle();
-        assert!(
-            store.state().library().unwrap().search.editing,
-            "pressing / should focus the query field"
-        );
-
-        // Now `q` must reach the text field rather than quitting the app.
-        store.send(Action::Event(key(KeyCode::Char('q'))), |_| {});
-        assert!(
-            store.pending_len() > 0,
-            "the key should have been routed to search, not swallowed as quit"
-        );
-        store.settle();
-        assert!(
-            store.state().library().unwrap().search.editing,
-            "still editing after typing a letter"
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "space should not have been typed"
         );
     }
 

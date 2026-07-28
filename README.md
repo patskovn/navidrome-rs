@@ -11,8 +11,10 @@ is ported from it.
 
 - **Sign in** with server URL, username and password. Credentials are verified
   before being saved; the password goes to the OS keychain, never to disk.
-- **Tabs**: Albums, All Music, Search. `1`/`2`/`3` or `Tab` to switch.
-- **Search** over tracks and albums via `search3`.
+- **Tabs**: Albums and All Music, `Tab` to switch.
+- **Live search in both tabs.** The field is focused on arrival and takes every
+  key except the three reserved ones; results update as you type, debounced at
+  250ms. An empty query falls back to the full listing.
 - **Playback** with play/pause, next/previous, and volume.
 - **Progressive streaming** — a track starts playing before it has finished
   downloading.
@@ -26,17 +28,19 @@ is ported from it.
 
 | Key | Action |
 |---|---|
-| `1` `2` `3` / `Tab` | switch tab |
-| `j` / `k` | move in a list |
+| `Tab` | switch tab (works from anywhere) |
+| `↓` | leave the search field for the list |
+| `↑` | back to the search field, from the top of the list |
+| `j` / `k` / `↑` / `↓` | move in a list |
 | `Enter` | play album / track |
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume |
-| `/` | focus the search box (Search tab) |
-| `r` | reload the current tab |
 | `q` / `Ctrl-C` | quit |
 
-`q` is only "quit" when you are not typing a search.
+Single-key shortcuts (`space`, `n`, `p`, `q`, `+`, `-`) are commands only when
+focus is in the list. In the search field they are text — `q` is a query, not
+quit. `Tab` and `Ctrl-C` always work.
 
 ## Design notes
 

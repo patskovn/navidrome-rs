@@ -1,4 +1,8 @@
-//! The All Music tab: every track the server knows about, flattened.
+//! The All Music tab: a live search field over a track list.
+//!
+//! The field is focused on arrival and takes every key except Up, Down and Tab.
+//! Searching is debounced and runs on each keystroke; an empty query falls back
+//! to the default listing.
 
 use crossterm::event::Event;
 use crossterm::event::KeyCode;
@@ -10,6 +14,8 @@ use tca::ReducerExt;
 use tca::Scope;
 use tca::case;
 
+use crate::app::DEBOUNCE;
+use crate::app::PaneFocus;
 use crate::subsonic::SharedLibrary;
 use crate::subsonic::Track;
 use crate::ui::list;
@@ -38,16 +44,28 @@ fn truncate(text: &str, width: usize) -> String {
 
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct State {
-    pub tracks: list::State<Row>,
+    pub query: String,
+    pub focus: PaneFocus,
+    pub items: list::State<Row>,
     pub loading: bool,
     pub error: Option<String>,
+    /// Bumped on every keystroke. A debounced search, and any result it
+    /// produces, is discarded unless it still matches — which drops stale
+    /// in-flight work without needing cancellation.
+    pub generation: u64,
 }
 
 #[derive(Debug)]
 pub enum Action {
+    /// Load the default listing (empty query).
     Reload,
-    Loaded(Vec<Track>),
+    /// The query text changed; schedule a debounced search.
+    QueryChanged,
+    /// Debounce elapsed. Ignored if the generation has moved on.
+    RunQuery { query: String, generation: u64 },
+    Loaded { items: Vec<Track>, generation: u64 },
     Failed(String),
+    
     List(list::Action),
     Event(Event),
     Delegated(Delegated),
@@ -55,10 +73,8 @@ pub enum Action {
 
 #[derive(Debug)]
 pub enum Delegated {
-    /// The child did not consume the key. `entry` handles global keys before
-    /// routing, so the event itself is not carried back up.
     Noop,
-    /// Play the whole visible list, starting at this index.
+    /// Play the visible list, starting at this index.
     Play { tracks: Vec<Track>, index: usize },
 }
 
@@ -72,56 +88,85 @@ impl Reducer for Feature {
 
     fn reduce(&self, state: &mut State, action: Action) -> Effect<Action> {
         let library = self.library.clone();
+        let for_enter = self.library.clone();
 
         Scope::new(
-            |s: &mut State| &mut s.tracks,
+            |s: &mut State| &mut s.items,
             case!(Action::List),
             list::ListFeature::<Row>::default(),
         )
-        .on_delegate(case!(list::Action::Delegated), |state: &mut State, d| match d {
-            list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
-            list::Delegated::Enter(index) => {
-                let tracks: Vec<Track> = state.tracks.items.iter().map(|r| r.0.clone()).collect();
-                if tracks.is_empty() {
-                    return Effect::none();
-                }
-                Effect::send(Action::Delegated(Delegated::Play { tracks, index }))
+        .on_delegate(case!(list::Action::Delegated), move |state: &mut State, d| {
+            match d {
+                list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
+                list::Delegated::Enter(index) => { let _ = &for_enter; 
+                    let tracks: Vec<Track> = state.items.items.iter().map(|r| r.0.clone()).collect();
+                    if tracks.is_empty() {
+                        return Effect::none();
+                    }
+                    Effect::send(Action::Delegated(Delegated::Play { tracks, index }))
+                 }
+                list::Delegated::Toogle => Effect::none(),
             }
-            list::Delegated::Toogle => Effect::none(),
         })
         .or_else(move |state: &mut State, action| match action {
-            Action::Reload => {
+            Action::Event(e) => reduce_event(state, e),
+
+            Action::QueryChanged => {
+                state.generation += 1;
+                let generation = state.generation;
+                let query = state.query.clone();
+                Effect::run(move |send| async move {
+                    tokio::time::sleep(DEBOUNCE).await;
+                    send.send(Action::RunQuery { query, generation });
+                })
+            }
+
+            Action::RunQuery { query, generation } => {
+                // A newer keystroke has landed; this timer is stale.
+                if generation != state.generation {
+                    return Effect::none();
+                }
                 state.loading = true;
                 state.error = None;
                 let library = library.clone();
                 Effect::run(move |send| async move {
-                    // One page of albums' worth of tracks; enough to browse
-                    // without pulling an entire library into memory.
-                    match library.all_tracks(0, 40).await {
-                        Ok(tracks) => send.send(Action::Loaded(tracks)),
+                    let result = if query.trim().is_empty() {
+                        library.all_tracks(0, 40).await
+                    } else {
+                        library.search(&query).await.map(|r| r.tracks)
+                    };
+                    match result {
+                        Ok(items) => send.send(Action::Loaded { items, generation }),
                         Err(err) => send.send(Action::Failed(format!("{err:#}"))),
                     }
                 })
             }
-            Action::Loaded(tracks) => {
+
+            Action::Loaded { items, generation } => {
+                // Responses can arrive out of order; only the newest counts.
+                if generation != state.generation {
+                    return Effect::none();
+                }
                 state.loading = false;
-                state.tracks = list::State::new(tracks.into_iter().map(Row).collect());
+                state.items = list::State::new(items.into_iter().map(Row).collect());
                 Effect::none()
             }
+
+            Action::Reload => {
+                state.generation += 1;
+                Effect::send(Action::RunQuery {
+                    query: state.query.clone(),
+                    generation: state.generation,
+                })
+            }
+
             Action::Failed(message) => {
                 state.loading = false;
                 state.error = Some(message);
                 Effect::none()
             }
-            Action::Event(e) => {
-                if let Event::Key(key) = &e
-                    && key.kind == KeyEventKind::Press
-                    && key.code == KeyCode::Char('r')
-                {
-                    return Effect::send(Action::Reload);
-                }
-                Effect::send(Action::List(list::Action::Event(e)))
-            }
+
+            
             Action::Delegated(_) => Effect::none(),
             Action::List(_) => unreachable!("claimed by the scope"),
         })
@@ -129,7 +174,68 @@ impl Reducer for Feature {
     }
 }
 
+/// Routes a key according to focus. Only Up and Down are reserved here; Tab is
+/// handled globally by `entry`, and everything else is text.
+fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
+    let Event::Key(key) = &event else {
+        return Effect::none();
+    };
+    if key.kind != KeyEventKind::Press {
+        return Effect::none();
+    }
+
+    match (state.focus, key.code) {
+        (PaneFocus::Search, KeyCode::Down) => {
+            state.focus = PaneFocus::List;
+            if state.items.selected().is_none() && !state.items.items.is_empty() {
+                state.items.select(Some(0));
+            }
+            Effect::none()
+        }
+        // Up leaves the list only from its first row, so it still walks the
+        // list everywhere else.
+        (PaneFocus::List, KeyCode::Up) if state.items.selected().unwrap_or(0) == 0 => {
+            state.focus = PaneFocus::Search;
+            Effect::none()
+        }
+        (PaneFocus::List, _) => Effect::send(Action::List(list::Action::Event(event))),
+        (PaneFocus::Search, KeyCode::Char(c)) => {
+            state.query.push(c);
+            Effect::send(Action::QueryChanged)
+        }
+        (PaneFocus::Search, KeyCode::Backspace) => {
+            state.query.pop();
+            Effect::send(Action::QueryChanged)
+        }
+        (PaneFocus::Search, _) => Effect::none(),
+    }
+}
+
 pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>) {
+    use ratatui::layout::Constraint;
+    use ratatui::layout::Layout;
+    use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+
+    use crate::ui::theme::Theme;
+
     let state = store.state();
-    list::ui(ctx, &state.tracks);
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(ctx.area());
+
+    let focused = state.focus == PaneFocus::Search;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Search ")
+        .title_bottom(if focused { " ↓ to list " } else { " ↑ to search " })
+        .border_style(Theme::border(focused));
+    // A block cursor marks the caret without needing a real text widget.
+    let text = if focused {
+        format!("{}█", state.query)
+    } else {
+        state.query.clone()
+    };
+    ctx.frame()
+        .render_widget(Paragraph::new(text).block(block), rows[0]);
+
+    list::ui(&mut ctx.with_area(rows[1]), &state.items);
 }

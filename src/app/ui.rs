@@ -16,7 +16,7 @@ use tca::Store;
 use crate::app::entry::Action;
 use crate::app::entry::State;
 use crate::app::entry::Tab;
-use crate::app::{albums, auth, search, songs};
+use crate::app::{albums, auth, songs};
 use crate::audio::SampleTap;
 use crate::subsonic::format_duration;
 use crate::ui::DrawingContext;
@@ -89,10 +89,11 @@ fn draw_tabs(ctx: &mut DrawingContext, store: &Store<State, Action>) {
         } else {
             Theme::dim()
         };
-        spans.push(Span::styled(format!(" [{}] {} ", index + 1, tab.title()), style));
+        let _ = index;
+        spans.push(Span::styled(format!(" {} ", tab.title()), style));
     }
     spans.push(Span::styled(
-        "   space play/pause · n/p next/prev · +/- volume · q quit",
+        "   Tab switch · ↑↓ focus · space play/pause · n/p · +/- · q quit",
         Theme::dim(),
     ));
 
@@ -118,7 +119,6 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let status = match library.tab {
         Tab::Albums => status_line(library.albums.loading, &library.albums.error),
         Tab::AllMusic => status_line(library.songs.loading, &library.songs.error),
-        Tab::Search => status_line(library.search.searching, &library.search.error),
     };
     if let Some(line) = status {
         ctx.frame().render_widget(Paragraph::new(line), inner);
@@ -138,13 +138,6 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
             store.scope(
                 |s: &State| &s.library().expect("signed in").songs,
                 Action::Songs,
-            ),
-        ),
-        Tab::Search => search::ui(
-            &mut ctx.with_area(inner),
-            store.scope(
-                |s: &State| &s.library().expect("signed in").search,
-                Action::Search,
             ),
         ),
     }

@@ -28,6 +28,14 @@ where
     T: for<'a> Into<ListItem<'a>>,
     T: Clone,
 {
+    pub fn selected(&self) -> Option<usize> {
+        self.list_state.selected()
+    }
+
+    pub fn select(&mut self, index: Option<usize>) {
+        self.list_state.select(index);
+    }
+
     pub fn new(items: Vec<T>) -> Self {
         State {
             list_state: ListState::default(),
@@ -95,7 +103,7 @@ where
         match action {
             Action::Event(e) => match e {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char('j') => {
+                    KeyCode::Char('j') | KeyCode::Down => {
                         state.list_state.select(
                             state
                                 .list_state
@@ -108,7 +116,7 @@ where
 
                         Effect::none()
                     }
-                    KeyCode::Char('k') => {
+                    KeyCode::Char('k') | KeyCode::Up => {
                         state.list_state.select(
                             state
                                 .list_state
