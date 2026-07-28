@@ -44,6 +44,7 @@ is ported from it.
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume |
+| `?` | show all keys |
 | `Ctrl-O` | output device picker |
 | `q` / `Ctrl-C` | quit |
 

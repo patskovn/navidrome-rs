@@ -55,6 +55,10 @@ pub fn draw(
 
     // Drawn last so it sits above the tab; this is what the ported modal queue
     // was for.
+    if store.state().help {
+        ctx.queue_modal(draw_help);
+    }
+
     if let Some(picker) = store.state().picker.clone() {
         let player = store.state().player.clone();
         ctx.queue_modal(move |frame, area| draw_picker(frame, area, &picker, &player));
@@ -280,4 +284,73 @@ fn draw_picker(
     let mut state = ListState::default();
     state.select(Some(picker.selected));
     StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
+}
+
+/// Every binding, including the ones the footer no longer has room for.
+fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
+    use ratatui::layout::Constraint;
+    use ratatui::text::Span;
+    use ratatui::widgets::{Clear, Paragraph, Widget};
+
+    use crate::ui::layout::centered_constraint;
+    use crate::ui::layout::centered_pct;
+
+    const BINDINGS: &[(&str, &str)] = &[
+        ("Tab", "switch tab"),
+        ("↑ ↓", "move between the search field and the list"),
+        ("j k", "move in a list"),
+        ("↵", "open an album, or play a track"),
+        ("Esc ←", "back out of an open album"),
+        ("", ""),
+        ("space", "play / pause"),
+        ("n p", "next / previous track"),
+        ("+ -", "volume"),
+        ("", ""),
+        ("Ctrl-O", "choose an audio output"),
+        ("?", "this help"),
+        ("q", "quit"),
+        ("Ctrl-C", "quit, even while typing"),
+    ];
+
+    let rows = BINDINGS.len() as u16 + 4;
+    let vertical = centered_constraint(
+        area,
+        Constraint::Length(rows.min(area.height)),
+        ratatui::layout::Direction::Vertical,
+    );
+    let modal = centered_pct(vertical, ratatui::layout::Direction::Horizontal, 60);
+
+    Clear.render(modal, frame.buffer_mut());
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Keys ")
+        .title_bottom(" any key to close ")
+        .border_style(Style::new().fg(Theme::ACCENT));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let lines: Vec<Line> = BINDINGS
+        .iter()
+        .map(|(keys, what)| {
+            if keys.is_empty() {
+                return Line::from("");
+            }
+            Line::from(vec![
+                Span::styled(format!(" {keys:<8}"), Style::new().fg(Theme::ACCENT)),
+                Span::raw(*what),
+            ])
+        })
+        .collect();
+
+    // A note the list itself cannot express.
+    let mut lines = lines;
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from(" Letters type into the search field; shortcuts need the list focused.")
+            .style(Theme::dim()),
+    );
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }

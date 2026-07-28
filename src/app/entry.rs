@@ -80,6 +80,7 @@ pub struct DevicePicker {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct State {
+    pub help: bool,
     pub picker: Option<DevicePicker>,
     pub session: Session,
     pub player: player::State,
@@ -89,6 +90,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            help: false,
             picker: None,
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
@@ -164,6 +166,8 @@ pub enum Action {
     Tick,
     /// Open or close the output picker.
     TogglePicker,
+    /// Open or close the keybinding help.
+    ToggleHelp,
     Quit,
 }
 
@@ -275,6 +279,11 @@ impl Reducer for Feature {
                 // every processed action, which is the whole point.
                 Action::Tick => Effect::none(),
 
+                Action::ToggleHelp => {
+                    state.help = !state.help;
+                    Effect::none()
+                }
+
                 Action::TogglePicker => {
                     state.picker = match state.picker {
                         Some(_) => None,
@@ -318,6 +327,12 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             return Effect::send(Action::Quit);
         }
         return Effect::send(Action::Auth(auth::Action::Event(event)));
+    }
+
+    // Help is read-only, so any key dismisses it rather than only Esc.
+    if state.help {
+        state.help = false;
+        return Effect::none();
     }
 
     // The picker owns the keyboard while it is open.
@@ -369,6 +384,12 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     // every printable key, so a plain letter would only ever be typed.
     if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
         return Effect::send(Action::TogglePicker);
+    }
+    // `?` is reserved even though the search field takes every other printable
+    // key. Searching for a literal question mark is vanishingly rare, and `?`
+    // for help is worth more than that.
+    if key.code == KeyCode::Char('?') {
+        return Effect::send(Action::ToggleHelp);
     }
 
     // Everything else is text while the search field has focus: a bare `q` is
@@ -517,6 +538,38 @@ mod test {
 
         store.send(Action::Event(key(KeyCode::Esc)), |s| s.picker = None);
         assert!(store.state().picker.is_none(), "Esc should close it");
+    }
+
+    #[tokio::test]
+    async fn question_mark_opens_help_from_the_search_field() {
+        let mut store = signed_in_store();
+        assert!(store.state().search_focused());
+
+        store.send(Action::Event(key(KeyCode::Char('?'))), |_| {});
+        store.settle();
+        assert!(store.state().help, "? should open help");
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "and must not be typed into the query"
+        );
+    }
+
+    #[tokio::test]
+    async fn any_key_dismisses_help() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(key(KeyCode::Char('?'))), |_| {});
+        store.settle();
+        assert!(store.state().help);
+
+        // Help is read-only, so it should not need a specific key to leave.
+        store.send(Action::Event(key(KeyCode::Char('x'))), |s| s.help = false);
+        assert!(!store.state().help, "any key should close help");
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "the dismissing key should be swallowed, not typed"
+        );
     }
 
     /// A bare `o` stays search text.
