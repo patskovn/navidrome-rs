@@ -161,11 +161,17 @@ fn open_sink(
     .map_err(|err| format!("{err}"))?;
 
     let active = name.map(str::to_string);
-    builder
+    let mut sink = builder
         .with_error_callback(on_error)
         .open_stream()
-        .map(|sink| (sink, active))
-        .map_err(|err| format!("{err}"))
+        .map_err(|err| format!("{err}"))?;
+
+    // Every rebuild drops the previous sink on purpose, and rodio warns about
+    // that on stderr — which lands on top of the alternate screen and corrupts
+    // the TUI. We manage the lifecycle deliberately, so the warning is noise.
+    sink.log_on_drop(false);
+
+    Ok((sink, active))
 }
 
 /// Either a fully cached file or a progressive HTTP stream, both of which are
