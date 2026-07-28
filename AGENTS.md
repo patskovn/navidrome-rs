@@ -171,6 +171,55 @@ Reducers are testable because the server sits behind the `Library` trait; use
   arriving for absent child state, which is normal when an in-flight effect
   races a state transition.
 
+## Next up: output-device switching and a speaker picker
+
+Playback breaks when the output device goes away — unplugging a laptop from a
+monitor with speakers, swapping to headphones. Nothing recovers, and there is
+no way to choose a device.
+
+**Cause.** `audio/engine.rs` calls `DeviceSinkBuilder::open_default_sink()` once
+when the audio thread starts and holds the `MixerDeviceSink` and `Player`
+forever. When cpal's stream dies, nothing is listening, so playback stops
+silently and the engine still believes it is playing.
+
+### API (verified against rodio 0.22.2)
+
+- `DeviceSinkBuilder::with_error_callback(f)` — cpal reports
+  `StreamError::DeviceNotAvailable` here. This is the detection signal and is
+  currently unused.
+- `DeviceSinkBuilder::from_device(cpal::Device)` / `from_default_device()` /
+  `open_stream()` — reopen on a chosen device.
+- `open_sink_or_fallback()` — reopen on the default when the current one fails.
+- rodio re-exports `cpal`, `DeviceTrait`, `OutputDevices`, so enumeration and
+  device names need no new dependency. Use `cpal::default_host()`
+  `.output_devices()` and `DeviceTrait::name()`.
+
+### Three pieces, only the first is small
+
+1. **Survive the unplug.** Install the error callback, send a `DeviceLost`
+   event, rebuild via `open_sink_or_fallback()`. The subtle part is *resuming*:
+   a rebuild yields a fresh `Player`, so the current track must be re-opened
+   and seeked back. The engine already tracks position for its `Position`
+   events, and `Player::try_seek` exists. A cached track re-opens cheaply; one
+   still streaming does not.
+2. **Enumerate and pick.** List devices, remember the choice in `ServerConfig`
+   (or a sibling settings file).
+3. **The picker UI.** A modal over the current tab, not a fourth tab — it is a
+   settings action, not a browsing mode. `DrawingContext::queue_modal` is
+   ported from tgpt and still unused; this is what it is for.
+
+### Traps
+
+- **Device identity is by name.** cpal has no stable id, so a remembered choice
+  must be matched by name and fall back gracefully when that device is absent.
+- **The rebuild belongs on the audio thread.** It owns the device and the
+  `Player`; a reducer must only send a command. Same rule as everything else in
+  `audio/engine.rs`.
+- **`MixerDeviceSink` and `Player` are rebuilt together.** A `Player` is
+  connected to one mixer and cannot be moved to another.
+- Volume and pause state live on the `Player`, so both must be reapplied after
+  a rebuild or the track resumes at full volume.
+
 ## Not done yet
 
 No playlists, no artist browsing, no shuffle/repeat. Seek is implemented in the
