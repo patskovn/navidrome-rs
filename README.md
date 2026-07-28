@@ -19,7 +19,8 @@ is ported from it.
 - **Album view**: Enter opens an album — tracks on the left, cover art and
   metadata on the right. Artwork is drawn as colour half-blocks, so it needs no
   terminal graphics protocol.
-- **Playback** with play/pause, next/previous, and volume.
+- **Playback** with play/pause, next/previous, and volume. The sounding track
+  is marked in whichever list it appears in.
 - **Progressive streaming** — a track starts playing before it has finished
   downloading.
 - **2 GiB LRU disk cache** of original files, populated as a side effect of

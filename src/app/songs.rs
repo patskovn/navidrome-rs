@@ -211,7 +211,11 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     }
 }
 
-pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>) {
+pub fn ui(
+    ctx: &mut crate::ui::DrawingContext,
+    store: tca::Store<State, Action>,
+    playing: Option<&str>,
+) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
     use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
@@ -242,7 +246,9 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     if let Some(line) = status_line(state.loading, &state.error) {
         ctx.frame().render_widget(Paragraph::new(line), rows[1]);
     } else {
-        list::ui(&mut ctx.with_area(rows[1]), &state.items);
+        crate::ui::list::ui_marked(&mut ctx.with_area(rows[1]), &state.items, |row| {
+            playing.is_some_and(|id| id == row.0.id)
+        });
     }
 }
 

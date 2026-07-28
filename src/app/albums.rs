@@ -328,7 +328,11 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     }
 }
 
-pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>) {
+pub fn ui(
+    ctx: &mut crate::ui::DrawingContext,
+    store: tca::Store<State, Action>,
+    playing: Option<&str>,
+) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
     use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
@@ -338,7 +342,7 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     let state = store.state();
 
     if let Some(detail) = &state.detail {
-        draw_detail(ctx, detail);
+        draw_detail(ctx, detail, playing);
         return;
     }
 
@@ -386,7 +390,11 @@ fn status_line(loading: bool, error: &Option<String>) -> Option<ratatui::text::L
 /// squeezing the track titles.
 const INFO_WIDTH: u16 = 34;
 
-fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
+fn draw_detail(
+    ctx: &mut crate::ui::DrawingContext,
+    detail: &Detail,
+    playing: Option<&str>,
+) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
 
@@ -395,11 +403,16 @@ fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
     let columns =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(INFO_WIDTH)]).split(ctx.area());
 
-    draw_tracks(ctx, detail, columns[0]);
+    draw_tracks(ctx, detail, columns[0], playing);
     draw_info(ctx, detail, columns[1]);
 }
 
-fn draw_tracks(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
+fn draw_tracks(
+    ctx: &mut crate::ui::DrawingContext,
+    detail: &Detail,
+    area: ratatui::layout::Rect,
+    playing: Option<&str>,
+) {
     use ratatui::style::Style;
     use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 
@@ -412,11 +425,24 @@ fn draw_tracks(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratat
         .enumerate()
         .map(|(i, track)| {
             let number = track.track_no.unwrap_or(i as i32 + 1);
-            ListItem::from(format!(
-                "{number:>3}. {:<width$} {}",
+            let sounding = playing.is_some_and(|id| id == track.id);
+            // A note replaces the track number on the sounding row, so the
+            // marker costs no width and the columns stay aligned.
+            let lead = if sounding {
+                "  ♪".to_string()
+            } else {
+                format!("{number:>3}")
+            };
+            let item = ListItem::from(format!(
+                "{lead}. {:<width$} {}",
                 truncate(&track.title, width),
                 track.duration_display()
-            ))
+            ));
+            if sounding {
+                item.style(Style::new().fg(Theme::PLAYING))
+            } else {
+                item
+            }
         })
         .collect();
 

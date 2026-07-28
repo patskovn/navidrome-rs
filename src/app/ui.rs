@@ -105,6 +105,12 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let Some(library) = store.state().library().cloned() else {
         return;
     };
+    // Which track is sounding right now, so lists can mark it.
+    let playing = store
+        .state()
+        .player
+        .current_track()
+        .map(|track| track.id.clone());
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -127,6 +133,7 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
                 |s: &State| &s.library().expect("signed in").albums,
                 Action::Albums,
             ),
+            playing.as_deref(),
         ),
         Tab::AllMusic => songs::ui(
             &mut ctx.with_area(inner),
@@ -134,6 +141,7 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
                 |s: &State| &s.library().expect("signed in").songs,
                 Action::Songs,
             ),
+            playing.as_deref(),
         ),
     }
 }

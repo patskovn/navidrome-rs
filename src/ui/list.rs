@@ -63,6 +63,40 @@ where
     StatefulWidget::render(list, ctx.area(), ctx.frame().buffer_mut(), &mut list_state);
 }
 
+/// Like [`ui`], but flags rows matching `mark` — used to show which track is
+/// currently sounding.
+pub fn ui_marked<T, F>(ctx: &mut crate::ui::DrawingContext, state: &State<T>, mark: F)
+where
+    T: for<'a> Into<ListItem<'a>>,
+    T: Clone,
+    F: Fn(&T) -> bool,
+{
+    let items: Vec<ListItem> = state
+        .items
+        .iter()
+        .map(|item| {
+            let marked = mark(item);
+            let list_item = item.clone().into();
+            if marked {
+                list_item.style(Style::default().fg(ratatui::style::Color::Cyan))
+            } else {
+                list_item
+            }
+        })
+        .collect();
+    let list = List::new(items)
+        .highlight_style(
+            Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::REVERSED)
+                .fg(ratatui::style::Color::Blue),
+        )
+        .highlight_symbol(">")
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
+    let mut list_state = state.list_state;
+    StatefulWidget::render(list, ctx.area(), ctx.frame().buffer_mut(), &mut list_state);
+}
+
 #[derive(Debug)]
 pub enum Action {
     Event(Event),
