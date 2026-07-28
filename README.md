@@ -18,7 +18,9 @@ is ported from it.
   downloading.
 - **2 GiB LRU disk cache** of original files, populated as a side effect of
   streaming rather than by a second download.
-- **Spectrum visualiser** driven by a real FFT over the decoded audio.
+- **Monochrome spectrum visualiser** driven by a real FFT over the decoded
+  audio, with peak-hold caps. It sets no colour at all, so it inherits the
+  terminal's foreground and reads correctly on light and dark themes.
 
 ## Keys
 

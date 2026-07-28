@@ -186,9 +186,11 @@ fn draw_player(
         Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).split(inner);
 
     let bars = columns[0].width as usize;
-    let levels = spectrum.update(tap, bars).to_vec();
+    spectrum.update(tap, bars);
+    let levels = spectrum.levels().to_vec();
+    let peaks = spectrum.peaks().to_vec();
     ctx.frame()
-        .render_widget(SpectrumWidget::new(&levels), columns[0]);
+        .render_widget(SpectrumWidget::new(&levels, &peaks), columns[0]);
 
     let rows = Layout::vertical([
         Constraint::Length(1),

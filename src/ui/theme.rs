@@ -29,15 +29,5 @@ impl Theme {
         Style::new().fg(Self::DIM)
     }
 
-    /// Colour for a spectrum bar, ramped by how tall it is. Low bars sit cool,
-    /// peaks run hot, which reads as "energy" without needing a legend.
-    pub fn spectrum_bar(fraction: f32) -> Color {
-        match fraction {
-            f if f > 0.85 => Color::LightRed,
-            f if f > 0.65 => Color::LightMagenta,
-            f if f > 0.45 => Color::Magenta,
-            f if f > 0.25 => Color::Blue,
-            _ => Color::Indexed(63),
-        }
-    }
+
 }

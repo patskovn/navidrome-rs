@@ -8,7 +8,6 @@ use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{FrequencyLimit, samples_fft_to_spectrum};
 
 use crate::audio::SampleTap;
-use crate::ui::theme::Theme;
 
 /// Vertical resolution per cell, using Unicode eighth-blocks so a bar can be
 /// eight times more precise than the character grid.
@@ -23,6 +22,10 @@ const MAX_HZ: f32 = 12_000.0;
 const ATTACK: f32 = 0.6;
 const DECAY: f32 = 0.25;
 
+/// How fast peak-hold caps sink, as a fraction of full height per frame. Slow
+/// enough to read as a falling marker, fast enough not to look stuck.
+const PEAK_FALL: f32 = 0.012;
+
 /// Retained bar heights, so the visualiser can ease between frames.
 ///
 /// Lives in the widget layer, not reducer state: it is presentation-only and
@@ -30,6 +33,9 @@ const DECAY: f32 = 0.25;
 #[derive(Debug, Default, Clone)]
 pub struct Spectrum {
     levels: Vec<f32>,
+    /// Highest recent level per bar, sinking slowly. With no colour available
+    /// to signal intensity, these caps carry most of the visual information.
+    peaks: Vec<f32>,
 }
 
 impl Spectrum {
@@ -44,10 +50,12 @@ impl Spectrum {
     pub fn update(&mut self, tap: &SampleTap, bars: usize) -> &[f32] {
         if bars == 0 {
             self.levels.clear();
+            self.peaks.clear();
             return &self.levels;
         }
         if self.levels.len() != bars {
             self.levels = vec![0.0; bars];
+            self.peaks = vec![0.0; bars];
         }
 
         let Some((samples, sample_rate)) = tap.snapshot() else {
@@ -55,6 +63,7 @@ impl Spectrum {
             for level in &mut self.levels {
                 *level *= 1.0 - DECAY;
             }
+            self.sink_peaks();
             return &self.levels;
         };
 
@@ -106,11 +115,28 @@ impl Spectrum {
             };
         }
 
+        self.sink_peaks();
         &self.levels
+    }
+
+    /// Lowers each cap towards its bar, snapping straight up when the bar
+    /// overtakes it.
+    fn sink_peaks(&mut self) {
+        for (peak, level) in self.peaks.iter_mut().zip(self.levels.iter()) {
+            if *level >= *peak {
+                *peak = *level;
+            } else {
+                *peak = (*peak - PEAK_FALL).max(*level);
+            }
+        }
     }
 
     pub fn levels(&self) -> &[f32] {
         &self.levels
+    }
+
+    pub fn peaks(&self) -> &[f32] {
+        &self.peaks
     }
 }
 
@@ -121,14 +147,23 @@ fn log_bucket(bar: usize, bars: usize, max_index: f32) -> f32 {
     max_index.powf(t) - 1.0
 }
 
-/// Renders bar heights as a column chart filling `area`.
+/// Cap drawn above a bar at its recent peak.
+const CAP: char = '▔';
+
+/// Renders bar heights as a monochrome column chart filling `area`.
+///
+/// Deliberately sets no foreground colour: the bars inherit the terminal's
+/// own, so the visualiser reads correctly on light and dark themes alike.
+/// Intensity is carried by weight (dim body, bold tip) and by the peak caps
+/// rather than by hue.
 pub struct SpectrumWidget<'a> {
     levels: &'a [f32],
+    peaks: &'a [f32],
 }
 
 impl<'a> SpectrumWidget<'a> {
-    pub fn new(levels: &'a [f32]) -> Self {
-        Self { levels }
+    pub fn new(levels: &'a [f32], peaks: &'a [f32]) -> Self {
+        Self { levels, peaks }
     }
 }
 
@@ -144,7 +179,7 @@ impl Widget for SpectrumWidget<'_> {
             // Height in eighths, so bars grow smoothly rather than jumping a
             // whole cell at a time.
             let eighths = (level.clamp(0.0, 1.0) * (rows * 8) as f32).round() as usize;
-            let style = Style::new().fg(Theme::spectrum_bar(*level));
+            let top_row = eighths.saturating_sub(1) / 8;
 
             for row in 0..rows {
                 // Row 0 is the bottom of the chart.
@@ -153,10 +188,32 @@ impl Widget for SpectrumWidget<'_> {
                 if ch == ' ' {
                     continue;
                 }
+                // Weight stands in for colour: the body recedes, the tip leads.
+                let style = if row == top_row {
+                    Style::new().bold()
+                } else if row * 3 < rows {
+                    Style::new().dim()
+                } else {
+                    Style::new()
+                };
                 let y = area.y + (rows - 1 - row) as u16;
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     cell.set_style(style);
+                }
+            }
+
+            // Peak cap, drawn only where it has separated from the bar so it
+            // never sits on top of the tip it is tracking.
+            let Some(peak) = self.peaks.get(column) else {
+                continue;
+            };
+            let peak_row = ((peak.clamp(0.0, 1.0) * rows as f32).ceil() as usize).saturating_sub(1);
+            if peak_row > top_row || eighths == 0 {
+                let y = area.y + (rows - 1 - peak_row) as u16;
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(CAP);
+                    cell.set_style(Style::new().dim());
                 }
             }
         }
@@ -189,6 +246,131 @@ mod test {
             "bars should fall to silence, got {:?}",
             spectrum.levels()
         );
+    }
+
+    /// The whole point of the monochrome design: no cell may carry a colour,
+    /// so the bars inherit the terminal's foreground on any theme.
+    #[test]
+    fn nothing_rendered_sets_a_foreground_colour() {
+        use ratatui::buffer::Buffer;
+        use ratatui::style::Color;
+
+        let levels = [0.9, 0.5, 0.2, 0.05, 0.0];
+        let peaks = [0.95, 0.8, 0.7, 0.6, 0.4];
+        let area = Rect::new(0, 0, 5, 6);
+        let mut buf = Buffer::empty(area);
+
+        SpectrumWidget::new(&levels, &peaks).render(area, &mut buf);
+
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                let style = buf.cell((x, y)).unwrap().style();
+                // `Reset` is ratatui's "inherit the terminal's colour", which
+                // is precisely what a colourless visualiser should leave behind.
+                let uncoloured = |c: Option<Color>| matches!(c, None | Some(Color::Reset));
+                assert!(uncoloured(style.fg), "cell ({x},{y}) set fg {:?}", style.fg);
+                assert!(uncoloured(style.bg), "cell ({x},{y}) set bg {:?}", style.bg);
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_renders_dim_body_and_bold_tip() {
+        use ratatui::buffer::Buffer;
+        use ratatui::style::Modifier;
+
+        let levels = [1.0];
+        let peaks = [1.0];
+        let area = Rect::new(0, 0, 1, 6);
+        let mut buf = Buffer::empty(area);
+        SpectrumWidget::new(&levels, &peaks).render(area, &mut buf);
+
+        // Top row of a full-height bar is the tip.
+        let tip = buf.cell((0, area.y)).unwrap().style();
+        assert!(tip.add_modifier.contains(Modifier::BOLD), "tip should be bold");
+
+        // Bottom row is body, which recedes.
+        let base = buf.cell((0, area.bottom() - 1)).unwrap().style();
+        assert!(base.add_modifier.contains(Modifier::DIM), "base should be dim");
+    }
+
+    #[test]
+    fn peaks_hold_above_a_falling_bar_then_sink() {
+        let mut spectrum = Spectrum::new();
+        let tap = SampleTap::new();
+
+        // Establish a loud bar, then let it fall silent.
+        let tone: Vec<f32> = (0..WINDOW)
+            .map(|i| ((i as f32 / 44_100.0) * 220.0 * std::f32::consts::TAU).sin())
+            .collect();
+        feed(&tap, tone);
+        for _ in 0..10 {
+            spectrum.update(&tap, 32);
+        }
+        let held = spectrum.peaks().iter().cloned().fold(0.0f32, f32::max);
+        assert!(held > 0.1, "a peak should have been captured");
+
+        tap.mark_idle();
+        for _ in 0..5 {
+            spectrum.update(&tap, 32);
+        }
+        let after = spectrum.peaks().iter().cloned().fold(0.0f32, f32::max);
+        let bars = spectrum.levels().iter().cloned().fold(0.0f32, f32::max);
+        assert!(after < held, "caps should sink once the bar falls");
+        assert!(after > bars, "caps should still float above the bar");
+
+        // And eventually they land.
+        for _ in 0..400 {
+            spectrum.update(&tap, 32);
+        }
+        assert!(
+            spectrum.peaks().iter().all(|p| *p < 0.01),
+            "caps should settle to the floor in silence"
+        );
+    }
+
+    /// Prints a frame so the monochrome look can be eyeballed:
+    /// `cargo test preview_frame -- --nocapture --ignored`
+    #[test]
+    #[ignore = "visual check only"]
+    fn preview_frame() {
+        use ratatui::buffer::Buffer;
+
+        let mut spectrum = Spectrum::new();
+        let tap = SampleTap::new();
+        // A chord plus some noise, so the bars are not all one height.
+        let mix: Vec<f32> = (0..WINDOW)
+            .map(|i| {
+                let t = i as f32 / 44_100.0;
+                let tau = std::f32::consts::TAU;
+                0.5 * (t * 110.0 * tau).sin()
+                    + 0.35 * (t * 440.0 * tau).sin()
+                    + 0.2 * (t * 1800.0 * tau).sin()
+                    + 0.1 * (t * 5000.0 * tau).sin()
+            })
+            .collect();
+        feed(&tap, mix);
+        for _ in 0..12 {
+            spectrum.update(&tap, 48);
+        }
+        // Let the bars drop so the peak caps separate and become visible.
+        tap.mark_idle();
+        for _ in 0..6 {
+            spectrum.update(&tap, 48);
+        }
+
+        let area = Rect::new(0, 0, 48, 8);
+        let mut buf = Buffer::empty(area);
+        SpectrumWidget::new(spectrum.levels(), spectrum.peaks()).render(area, &mut buf);
+
+        println!();
+        for y in 0..area.height {
+            let row: String = (0..area.width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol().chars().next().unwrap_or(' '))
+                .collect();
+            println!("|{row}|");
+        }
+        println!();
     }
 
     #[test]
