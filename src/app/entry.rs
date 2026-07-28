@@ -72,8 +72,15 @@ pub struct Library {
     pub songs: songs::State,
 }
 
+/// Output picker, open over whatever tab is showing.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DevicePicker {
+    pub selected: usize,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct State {
+    pub picker: Option<DevicePicker>,
     pub session: Session,
     pub player: player::State,
     pub status: Option<String>,
@@ -82,6 +89,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            picker: None,
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
             status: None,
@@ -154,6 +162,8 @@ pub enum Action {
     Player(player::Action),
     /// Repaint request while audio plays.
     Tick,
+    /// Open or close the output picker.
+    TogglePicker,
     Quit,
 }
 
@@ -265,6 +275,23 @@ impl Reducer for Feature {
                 // every processed action, which is the whole point.
                 Action::Tick => Effect::none(),
 
+                Action::TogglePicker => {
+                    state.picker = match state.picker {
+                        Some(_) => None,
+                        None => Some(DevicePicker::default()),
+                    };
+                    // Refresh on open: devices come and go while we run.
+                    if state.picker.is_some() {
+                        return Effect::send(Action::Player(player::Action::Engine(
+                            crate::audio::Event::Devices {
+                                names: crate::audio::engine::output_devices(),
+                                active: state.player.active_device.clone(),
+                            },
+                        )));
+                    }
+                    Effect::none()
+                }
+
                 Action::Quit => Effect::quit(),
 
                 Action::Auth(_)
@@ -291,6 +318,36 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             return Effect::send(Action::Quit);
         }
         return Effect::send(Action::Auth(auth::Action::Event(event)));
+    }
+
+    // The picker owns the keyboard while it is open.
+    if let Some(picker) = &mut state.picker {
+        let count = state.player.devices.len() + 1; // +1 for "system default"
+        return match key.code {
+            KeyCode::Esc | KeyCode::Char('o') => {
+                state.picker = None;
+                Effect::none()
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                picker.selected = (picker.selected + 1).min(count.saturating_sub(1));
+                Effect::none()
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                picker.selected = picker.selected.saturating_sub(1);
+                Effect::none()
+            }
+            KeyCode::Enter => {
+                let index = picker.selected;
+                state.picker = None;
+                // Index 0 is the system default; the rest are named devices.
+                let name = index
+                    .checked_sub(1)
+                    .and_then(|i| state.player.devices.get(i))
+                    .map(|(id, _)| id.clone());
+                Effect::send(Action::Player(player::Action::UseDevice(name)))
+            }
+            _ => Effect::none(),
+        };
     }
 
     // Tab always switches tabs, even from the search field.
@@ -321,6 +378,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             KeyCode::Char('-') => {
                 return Effect::send(Action::Player(player::Action::VolumeDown));
             }
+            KeyCode::Char('o') => return Effect::send(Action::TogglePicker),
             _ => {}
         }
     }

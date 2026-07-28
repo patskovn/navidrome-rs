@@ -53,6 +53,13 @@ pub fn draw(
     draw_active_tab(&mut ctx.with_area(rows[1]), &store);
     draw_player(&mut ctx.with_area(rows[2]), &store, tap, spectrum);
 
+    // Drawn last so it sits above the tab; this is what the ported modal queue
+    // was for.
+    if let Some(picker) = store.state().picker.clone() {
+        let player = store.state().player.clone();
+        ctx.queue_modal(move |frame, area| draw_picker(frame, area, &picker, &player));
+    }
+
     ctx.flush_modals();
 }
 
@@ -219,4 +226,58 @@ fn draw_player(
         .style(Theme::dim()),
     };
     ctx.frame().render_widget(Paragraph::new(footer), rows[2]);
+}
+
+/// The output picker: system default plus every device the host offers.
+fn draw_picker(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    picker: &crate::app::entry::DevicePicker,
+    player: &crate::app::player::State,
+) {
+    use ratatui::layout::Constraint;
+    use ratatui::widgets::{Clear, List, ListItem, ListState, StatefulWidget, Widget};
+
+    use crate::ui::layout::centered_constraint;
+    use crate::ui::layout::centered_pct;
+
+    let rows = (player.devices.len() + 1).min(12) as u16 + 2;
+    let vertical = centered_constraint(
+        area,
+        Constraint::Length(rows),
+        ratatui::layout::Direction::Vertical,
+    );
+    let modal = centered_pct(vertical, ratatui::layout::Direction::Horizontal, 60);
+
+    Clear.render(modal, frame.buffer_mut());
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Output ")
+        .title_bottom(" ↵ select · Esc close ")
+        .border_style(Style::new().fg(Theme::ACCENT));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    // Index 0 is always the system default, so there is a way back.
+    let mut items = vec![ListItem::from(match &player.active_device {
+        None => "System default  ·  in use".to_string(),
+        Some(_) => "System default".to_string(),
+    })];
+    items.extend(player.devices.iter().map(|(id, label)| {
+        let in_use = player.active_device.as_deref() == Some(id.as_str());
+        ListItem::from(if in_use {
+            format!("{label}  ·  in use")
+        } else {
+            label.clone()
+        })
+    }));
+
+    let list = List::new(items)
+        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
+        .highlight_symbol("▶ ");
+    let mut state = ListState::default();
+    state.select(Some(picker.selected));
+    StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
 }

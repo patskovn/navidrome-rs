@@ -14,7 +14,8 @@ use std::io::{Read, Seek};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rodio::{DeviceSinkBuilder, Player};
+use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 use stream_download::{Settings, StreamDownload};
 use tokio::sync::mpsc;
 
@@ -35,6 +36,10 @@ pub enum Command {
     Stop,
     SetVolume(f32),
     Seek(Duration),
+    /// Move playback to a named output, or back to the system default.
+    SetDevice(Option<String>),
+    /// Re-enumerate outputs and report them.
+    RefreshDevices,
     Shutdown,
 }
 
@@ -50,6 +55,13 @@ pub enum Event {
     Paused(bool),
     /// Something went wrong; the message is user-facing.
     Failed(String),
+    /// Available outputs as `(id, description)`, and which id is in use.
+    Devices {
+        names: Vec<(String, String)>,
+        active: Option<String>,
+    },
+    /// The output vanished and playback was moved elsewhere.
+    DeviceLost { recovered: bool },
 }
 
 /// Handle used by the rest of the app. Cheap to clone.
@@ -97,6 +109,65 @@ impl AudioEngine {
     }
 }
 
+/// Every output the host offers, as `(id, description)`.
+///
+/// Identity is the device *id*, which rodio documents as stable across reboots
+/// and reconnections; the description is only ever shown. Matching on the
+/// human-readable name would break the moment two devices shared one.
+pub fn output_devices() -> Vec<(String, String)> {
+    let host = rodio::cpal::default_host();
+    host.output_devices()
+        .map(|devices| {
+            devices
+                .map(|d| {
+                    let id = d.id().map(|id| format!("{id:?}")).unwrap_or_default();
+                    let label = d
+                        .description()
+                        .map(|desc| desc.name().to_string())
+                        .unwrap_or_else(|_| "Unknown output".to_string());
+                    (id, label)
+                })
+                .filter(|(id, _)| !id.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Opens a sink on `name`, or the default when absent or not found.
+///
+/// The error callback is the whole point: cpal reports `DeviceNotAvailable`
+/// here when a device is unplugged, and without it playback simply stops with
+/// nothing noticing.
+fn open_sink(
+    name: Option<&str>,
+    lost: tokio::sync::mpsc::UnboundedSender<()>,
+) -> Result<(MixerDeviceSink, Option<String>), String> {
+    let on_error = move |err: rodio::cpal::StreamError| {
+        log::warn!("audio stream error: {err}");
+        let _ = lost.send(());
+    };
+
+    let chosen = name.and_then(|wanted| {
+        rodio::cpal::default_host()
+            .output_devices()
+            .ok()?
+            .find(|d| d.id().is_ok_and(|id| format!("{id:?}") == wanted))
+    });
+
+    let builder = match chosen {
+        Some(device) => DeviceSinkBuilder::from_device(device),
+        None => DeviceSinkBuilder::from_default_device(),
+    }
+    .map_err(|err| format!("{err}"))?;
+
+    let active = name.map(str::to_string);
+    builder
+        .with_error_callback(on_error)
+        .open_stream()
+        .map(|sink| (sink, active))
+        .map_err(|err| format!("{err}"))
+}
+
 /// Either a fully cached file or a progressive HTTP stream, both of which are
 /// `Read + Seek` and so decodable.
 type Playable = Box<dyn ReadSeekSend>;
@@ -137,31 +208,101 @@ fn run(
     cache: Arc<TrackCache>,
     runtime: tokio::runtime::Handle,
 ) {
-    let device = match DeviceSinkBuilder::open_default_sink() {
-        Ok(device) => device,
+    // Device loss arrives on its own channel, from cpal's callback thread.
+    let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<()>();
+
+    let mut device_name: Option<String> = None;
+    let (mut device, _) = match open_sink(None, lost_tx.clone()) {
+        Ok(pair) => pair,
         Err(err) => {
             let _ = events.send(Event::Failed(format!("no audio output: {err}")));
             return;
         }
     };
-    let player = Player::connect_new(device.mixer());
+    let mut player = Player::connect_new(device.mixer());
+
+    // Enough to put playback back after a rebuild: a fresh sink means a fresh
+    // `Player`, so the track has to be re-opened and seeked.
+    let mut current: Option<(Track, String)> = None;
+    let mut volume = 1.0f32;
 
     // Tracks whether we have already reported the end of the current track, so
     // an idle player does not emit `Finished` on every tick.
     let mut playing = false;
 
+    let _ = events.send(Event::Devices {
+        names: output_devices(),
+        active: device_name.clone(),
+    });
+
     loop {
         // `recv_timeout` equivalent: wait for a command, but wake regularly to
         // report position and notice the track ending.
+        // Wake for a command, for device loss, or on the position tick.
+        let mut device_lost = false;
         let command = runtime.block_on(async {
-            tokio::time::timeout(POSITION_INTERVAL, commands.recv()).await
+            tokio::select! {
+                command = commands.recv() => Ok(command),
+                _ = lost_rx.recv() => {
+                    device_lost = true;
+                    Ok(None)
+                }
+                _ = tokio::time::sleep(POSITION_INTERVAL) => Err(()),
+            }
         });
+
+        if device_lost {
+            // Drain any pile-up: one unplug can fire the callback repeatedly.
+            while lost_rx.try_recv().is_ok() {}
+            log::warn!("output device lost; rebuilding");
+
+            let resume_at = player.get_pos();
+            let was_playing = playing && !player.is_paused();
+
+            match open_sink(device_name.as_deref(), lost_tx.clone())
+                .or_else(|_| open_sink(None, lost_tx.clone()))
+            {
+                Ok((new_device, active)) => {
+                    device = new_device;
+                    device_name = active;
+                    player = Player::connect_new(device.mixer());
+                    // Volume lives on the `Player`, so a rebuild resets it.
+                    player.set_volume(volume);
+
+                    if was_playing
+                        && let Some((track, url)) = current.clone()
+                        && let Ok(source) = runtime.block_on(open_source(&cache, &track, &url))
+                        && let Ok(decoded) = rodio::Decoder::new(source)
+                    {
+                        player.append(Tapped::new(decoded, tap.clone()));
+                        player.play();
+                        if let Err(err) = player.try_seek(resume_at) {
+                            log::warn!("could not resume at {resume_at:?}: {err}");
+                        }
+                    } else {
+                        playing = false;
+                    }
+                    let _ = events.send(Event::DeviceLost { recovered: true });
+                    let _ = events.send(Event::Devices {
+                        names: output_devices(),
+                        active: device_name.clone(),
+                    });
+                }
+                Err(err) => {
+                    playing = false;
+                    let _ = events.send(Event::Failed(format!("lost audio output: {err}")));
+                    let _ = events.send(Event::DeviceLost { recovered: false });
+                }
+            }
+            continue;
+        }
 
         match command {
             Ok(Some(Command::Shutdown)) | Ok(None) => break,
             Ok(Some(Command::Play { track, url })) => {
                 player.clear();
                 tap.mark_idle();
+                current = Some((track.clone(), url.clone()));
 
                 match runtime.block_on(open_source(&cache, &track, &url)) {
                     Ok(source) => match rodio::Decoder::new(source) {
@@ -197,10 +338,54 @@ fn run(
                 player.clear();
                 tap.mark_idle();
                 playing = false;
+                current = None;
                 let _ = events.send(Event::Paused(true));
             }
-            Ok(Some(Command::SetVolume(volume))) => {
-                player.set_volume(volume.clamp(0.0, 2.0));
+            Ok(Some(Command::SetVolume(level))) => {
+                volume = level.clamp(0.0, 2.0);
+                player.set_volume(volume);
+            }
+
+            Ok(Some(Command::RefreshDevices)) => {
+                let _ = events.send(Event::Devices {
+                    names: output_devices(),
+                    active: device_name.clone(),
+                });
+            }
+
+            Ok(Some(Command::SetDevice(name))) => {
+                let resume_at = player.get_pos();
+                let was_playing = playing && !player.is_paused();
+
+                match open_sink(name.as_deref(), lost_tx.clone()) {
+                    Ok((new_device, active)) => {
+                        device = new_device;
+                        device_name = active;
+                        player = Player::connect_new(device.mixer());
+                        player.set_volume(volume);
+
+                        if was_playing
+                            && let Some((track, url)) = current.clone()
+                            && let Ok(source) =
+                                runtime.block_on(open_source(&cache, &track, &url))
+                            && let Ok(decoded) = rodio::Decoder::new(source)
+                        {
+                            player.append(Tapped::new(decoded, tap.clone()));
+                            player.play();
+                            let _ = player.try_seek(resume_at);
+                        } else {
+                            playing = false;
+                        }
+                        let _ = events.send(Event::Devices {
+                            names: output_devices(),
+                            active: device_name.clone(),
+                        });
+                    }
+                    Err(err) => {
+                        let _ = events
+                            .send(Event::Failed(format!("cannot use that output: {err}")));
+                    }
+                }
             }
             Ok(Some(Command::Seek(pos))) => {
                 if let Err(err) = player.try_seek(pos) {
@@ -255,5 +440,17 @@ mod test {
         drop(rx);
         // Losing the audio thread must degrade to silence, not abort the UI.
         engine.send(Command::TogglePause);
+    }
+}
+
+#[cfg(test)]
+mod device_probe {
+    /// `cargo test list_outputs -- --nocapture --ignored`
+    #[test]
+    #[ignore = "depends on the host's audio hardware"]
+    fn list_outputs() {
+        for (id, label) in super::output_devices() {
+            println!("PROBE {label}  [{id}]");
+        }
     }
 }

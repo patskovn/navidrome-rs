@@ -25,6 +25,9 @@ pub struct State {
     /// 0.0..=2.0, where 1.0 is unity gain.
     pub volume: f32,
     pub error: Option<String>,
+    /// Outputs as `(id, description)`, and the id in use.
+    pub devices: Vec<(String, String)>,
+    pub active_device: Option<String>,
 }
 
 impl State {
@@ -61,6 +64,8 @@ pub enum Action {
     VolumeDown,
     /// Reported by the audio thread.
     Engine(crate::audio::Event),
+    /// Switch output, or return to the system default.
+    UseDevice(Option<String>),
     /// Emitted internally once a track has been handed to the engine.
     Delegated(Delegated),
 }
@@ -167,6 +172,11 @@ impl Reducer for Feature {
                 Effect::none()
             }
 
+            Action::UseDevice(name) => {
+                self.audio.send(Command::SetDevice(name));
+                Effect::none()
+            }
+
             Action::Engine(event) => self.reduce_engine_event(state, event),
 
             Action::Delegated(_) => Effect::none(),
@@ -199,6 +209,24 @@ impl Feature {
                 // Auto-advance is what makes an album play through.
                 Effect::send(Action::Next)
             }
+            Event::Devices { names, active } => {
+                state.devices = names;
+                state.active_device = active;
+                Effect::none()
+            }
+
+            Event::DeviceLost { recovered } => {
+                state.error = Some(if recovered {
+                    "Output changed; playback moved to another device".into()
+                } else {
+                    "Audio output was lost".into()
+                });
+                if !recovered {
+                    state.is_playing = false;
+                }
+                Effect::none()
+            }
+
             Event::Failed(message) => {
                 state.error = Some(message);
                 state.is_playing = false;
