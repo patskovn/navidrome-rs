@@ -196,8 +196,8 @@ impl Reducer for Feature {
                     },
                 )
                 .on_delegate(case!(albums::Action::Delegated), |_s: &mut State, d| match d {
-                    albums::Delegated::Play(tracks) => Effect::send(Action::Player(
-                        player::Action::SetQueue { tracks, index: 0 },
+                    albums::Delegated::Play { tracks, index } => Effect::send(Action::Player(
+                        player::Action::SetQueue { tracks, index },
                     )),
                     albums::Delegated::Noop => Effect::none(),
                 }),

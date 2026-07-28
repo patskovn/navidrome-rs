@@ -22,6 +22,29 @@ use crate::ui::list;
 
 use crate::subsonic::Album;
 use crate::subsonic::AlbumSort;
+use crate::subsonic::format_duration;
+
+/// One album's tracks, shown after Enter on an album.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Detail {
+    pub album: Album,
+    pub tracks: Vec<Track>,
+    pub selected: usize,
+    pub loading: bool,
+}
+
+impl Detail {
+    /// "12 tracks · 48:31", as far as the tags allow.
+    pub fn summary(&self) -> String {
+        let total: i64 = self.tracks.iter().filter_map(|t| t.duration).sum();
+        let count = self.tracks.len();
+        if total > 0 {
+            format!("{count} tracks · {}", format_duration(total as u64))
+        } else {
+            format!("{count} tracks")
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row(pub Album);
@@ -45,6 +68,8 @@ pub struct State {
     /// produces, is discarded unless it still matches — which drops stale
     /// in-flight work without needing cancellation.
     pub generation: u64,
+    /// Set while an album is open. Its presence takes over the tab.
+    pub detail: Option<Detail>,
 }
 
 #[derive(Debug)]
@@ -57,8 +82,10 @@ pub enum Action {
     RunQuery { query: String, generation: u64 },
     Loaded { items: Vec<Album>, generation: u64 },
     Failed(String),
-    /// Tracks fetched for an album the user chose.
-    Play(Vec<Track>),
+    /// An album was chosen; its tracks are being fetched.
+    OpenAlbum(Album),
+    DetailLoaded { album: Album, tracks: Vec<Track> },
+    CloseDetail,
     List(list::Action),
     Event(Event),
     Delegated(Delegated),
@@ -67,8 +94,8 @@ pub enum Action {
 #[derive(Debug)]
 pub enum Delegated {
     Noop,
-    /// Hand a whole album to the player.
-    Play(Vec<Track>),
+    /// Play `tracks[index]`, with the rest of the album queued behind it.
+    Play { tracks: Vec<Track>, index: usize },
 }
 
 pub struct Feature {
@@ -95,13 +122,8 @@ impl Reducer for Feature {
                     let Some(Row(album)) = state.items.items.get(index).cloned() else {
                         return Effect::none();
                     };
-                    let library = for_enter.clone();
-                    Effect::run(move |send| async move {
-                        match library.album_tracks(&album.id).await {
-                            Ok(tracks) => send.send(Action::Play(tracks)),
-                            Err(err) => send.send(Action::Failed(format!("{err:#}"))),
-                        }
-                    })
+                    let _ = &for_enter;
+                    Effect::send(Action::OpenAlbum(album))
                  }
                 list::Delegated::Toogle => Effect::none(),
             }
@@ -164,7 +186,38 @@ impl Reducer for Feature {
                 Effect::none()
             }
 
-            Action::Play(tracks) => Effect::send(Action::Delegated(Delegated::Play(tracks))),
+            Action::OpenAlbum(album) => {
+                state.detail = Some(Detail {
+                    album: album.clone(),
+                    loading: true,
+                    ..Default::default()
+                });
+                let library = library.clone();
+                Effect::run(move |send| async move {
+                    match library.album_tracks(&album.id).await {
+                        Ok(tracks) => send.send(Action::DetailLoaded { album, tracks }),
+                        Err(err) => send.send(Action::Failed(format!("{err:#}"))),
+                    }
+                })
+            }
+
+            Action::DetailLoaded { album, tracks } => {
+                // The user may have backed out while this was in flight.
+                if state.detail.as_ref().is_some_and(|d| d.album.id == album.id) {
+                    state.detail = Some(Detail {
+                        album,
+                        tracks,
+                        selected: 0,
+                        loading: false,
+                    });
+                }
+                Effect::none()
+            }
+
+            Action::CloseDetail => {
+                state.detail = None;
+                Effect::none()
+            }
 
             Action::Delegated(_) => Effect::none(),
             Action::List(_) => unreachable!("claimed by the scope"),
@@ -181,6 +234,33 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     };
     if key.kind != KeyEventKind::Press {
         return Effect::none();
+    }
+
+    // An open album takes the whole tab: its track list gets the keyboard.
+    if let Some(detail) = &mut state.detail {
+        return match key.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Backspace => Effect::send(Action::CloseDetail),
+            KeyCode::Down | KeyCode::Char('j') => {
+                detail.selected = (detail.selected + 1).min(detail.tracks.len().saturating_sub(1));
+                Effect::none()
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                detail.selected = detail.selected.saturating_sub(1);
+                Effect::none()
+            }
+            KeyCode::Enter => {
+                if detail.tracks.is_empty() {
+                    return Effect::none();
+                }
+                // The whole album becomes the queue, starting here, so the rest
+                // plays on after it.
+                Effect::send(Action::Delegated(Delegated::Play {
+                    tracks: detail.tracks.clone(),
+                    index: detail.selected,
+                }))
+            }
+            _ => Effect::none(),
+        };
     }
 
     match (state.focus, key.code) {
@@ -218,6 +298,12 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State, Action>)
     use crate::ui::theme::Theme;
 
     let state = store.state();
+
+    if let Some(detail) = &state.detail {
+        draw_detail(ctx, detail);
+        return;
+    }
+
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).split(ctx.area());
 
     let focused = state.focus == PaneFocus::Search;
@@ -343,6 +429,132 @@ mod test {
         );
     }
 
+    fn album(id: &str) -> Album {
+        Album {
+            id: id.into(),
+            name: format!("Album {id}"),
+            ..Default::default()
+        }
+    }
+
+    fn track(id: &str) -> Track {
+        Track {
+            id: id.into(),
+            title: format!("Track {id}"),
+            duration: Some(100),
+            ..Default::default()
+        }
+    }
+
+    /// Enter on an album must open it, not start playing.
+    #[tokio::test]
+    async fn enter_on_an_album_opens_it_rather_than_playing() {
+        let mut store = store();
+        store.send(Action::OpenAlbum(album("1")), |s| {
+            s.detail = Some(Detail {
+                album: album("1"),
+                loading: true,
+                ..Default::default()
+            })
+        });
+
+        assert!(store.state().detail.is_some(), "the album should be open");
+        assert!(
+            store.state().detail.as_ref().unwrap().loading,
+            "and its tracks should be loading"
+        );
+        store.settle();
+        assert!(
+            !store.state().detail.as_ref().unwrap().loading,
+            "loading should clear once tracks arrive"
+        );
+    }
+
+    #[tokio::test]
+    async fn enter_on_a_track_queues_the_whole_album_from_that_point() {
+        let mut store = store();
+        let tracks = vec![track("a"), track("b"), track("c")];
+        store.send(
+            Action::DetailLoaded {
+                album: album("1"),
+                tracks: tracks.clone(),
+            },
+            |_| {},
+        );
+        // Nothing is open, so a stray load is ignored.
+        assert!(store.state().detail.is_none());
+
+        store.send(Action::OpenAlbum(album("1")), |s| {
+            s.detail = Some(Detail {
+                album: album("1"),
+                loading: true,
+                ..Default::default()
+            })
+        });
+        store.settle();
+        store.send(
+            Action::DetailLoaded {
+                album: album("1"),
+                tracks: tracks.clone(),
+            },
+            |s| {
+                s.detail = Some(Detail {
+                    album: album("1"),
+                    tracks: tracks.clone(),
+                    selected: 0,
+                    loading: false,
+                })
+            },
+        );
+
+        // Move to the second track and play from there.
+        store.send(Action::Event(key(KeyCode::Down)), |s| {
+            s.detail.as_mut().unwrap().selected = 1
+        });
+        store.send(Action::Event(key(KeyCode::Enter)), |_| {});
+
+        assert_eq!(store.pending_len(), 1, "should have delegated a play");
+    }
+
+    #[tokio::test]
+    async fn escape_closes_an_open_album() {
+        let mut store = store();
+        store.send(Action::OpenAlbum(album("1")), |s| {
+            s.detail = Some(Detail {
+                album: album("1"),
+                loading: true,
+                ..Default::default()
+            })
+        });
+        store.settle();
+        store.send(Action::Event(key(KeyCode::Esc)), |_| {});
+        store.settle();
+        assert!(store.state().detail.is_none(), "Esc should go back");
+    }
+
+    /// Backing out while the fetch is in flight must not reopen the album.
+    #[tokio::test]
+    async fn a_late_track_load_is_dropped_after_backing_out() {
+        let mut store = store();
+        store.send(Action::OpenAlbum(album("1")), |s| {
+            s.detail = Some(Detail {
+                album: album("1"),
+                loading: true,
+                ..Default::default()
+            })
+        });
+        store.settle();
+        store.send(Action::CloseDetail, |s| s.detail = None);
+        store.send(
+            Action::DetailLoaded {
+                album: album("1"),
+                tracks: vec![track("a")],
+            },
+            |_| {},
+        );
+        assert!(store.state().detail.is_none(), "a late load must not reopen it");
+    }
+
     #[tokio::test]
     async fn down_moves_focus_into_the_list_and_selects_the_first_row() {
         let mut store = store();
@@ -373,3 +585,63 @@ mod test {
         assert_eq!(store.state().items.selected(), Some(0));
     }
 }
+
+fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail) {
+    use ratatui::layout::Constraint;
+    use ratatui::layout::Layout;
+    use ratatui::style::Style;
+    use ratatui::text::Line;
+    use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, StatefulWidget};
+
+    use crate::ui::theme::Theme;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(format!(" {} ", detail.album.name))
+        .title_bottom(" ↵ play from here · Esc back ");
+    let inner = block.inner(ctx.area());
+    let area = ctx.area();
+    ctx.frame().render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(2), Constraint::Fill(1)]).split(inner);
+
+    let artist = detail.album.artist.clone().unwrap_or_else(|| "Unknown".into());
+    let year = detail.album.year.map(|y| format!("  ·  {y}")).unwrap_or_default();
+    let header = vec![
+        Line::from(format!("{artist}{year}")),
+        Line::from(if detail.loading {
+            "Loading…".to_string()
+        } else {
+            detail.summary()
+        })
+        .style(Theme::dim()),
+    ];
+    ctx.frame()
+        .render_widget(ratatui::widgets::Paragraph::new(header), rows[0]);
+
+    let items: Vec<ListItem> = detail
+        .tracks
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let number = track.track_no.unwrap_or(i as i32 + 1);
+            ListItem::from(format!(
+                "{number:>3}. {:<44} {}",
+                track.title,
+                track.duration_display()
+            ))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
+        .highlight_symbol("▶ ");
+    let mut list_state = ListState::default();
+    if !detail.tracks.is_empty() {
+        list_state.select(Some(detail.selected));
+    }
+    StatefulWidget::render(list, rows[1], ctx.frame().buffer_mut(), &mut list_state);
+}
+
+use ratatui::style::Stylize as _;
