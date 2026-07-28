@@ -324,7 +324,11 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     if let Some(picker) = &mut state.picker {
         let count = state.player.devices.len() + 1; // +1 for "system default"
         return match key.code {
-            KeyCode::Esc | KeyCode::Char('o') => {
+            KeyCode::Esc => {
+                state.picker = None;
+                Effect::none()
+            }
+            KeyCode::Char('o') if key.modifiers == KeyModifiers::CONTROL => {
                 state.picker = None;
                 Effect::none()
             }
@@ -361,6 +365,11 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
         return Effect::send(Action::Quit);
     }
+    // Ctrl-O, not a bare `o`: the search field has focus by default and takes
+    // every printable key, so a plain letter would only ever be typed.
+    if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
+        return Effect::send(Action::TogglePicker);
+    }
 
     // Everything else is text while the search field has focus: a bare `q` is
     // a search term, not quit.
@@ -378,7 +387,6 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             KeyCode::Char('-') => {
                 return Effect::send(Action::Player(player::Action::VolumeDown));
             }
-            KeyCode::Char('o') => return Effect::send(Action::TogglePicker),
             _ => {}
         }
     }
@@ -480,6 +488,45 @@ mod test {
 
         assert_eq!(store.state().library().unwrap().albums.query, "qnp ");
         assert!(!store.state().player.is_playing, "space must not have played");
+    }
+
+    fn ctrl(code: KeyCode) -> Event {
+        Event::Key(KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        })
+    }
+
+    /// Regression: the picker key was a bare `o`, which the search field --
+    /// focused by default -- simply typed, making the picker unreachable.
+    #[tokio::test]
+    async fn the_picker_opens_from_the_search_field() {
+        let mut store = signed_in_store();
+        assert!(store.state().search_focused(), "search starts focused");
+
+        store.send(Action::Event(ctrl(KeyCode::Char('o'))), |_| {});
+        store.settle();
+        assert!(store.state().picker.is_some(), "Ctrl-O should open the picker");
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "and must not have been typed into the query"
+        );
+
+        store.send(Action::Event(key(KeyCode::Esc)), |s| s.picker = None);
+        assert!(store.state().picker.is_none(), "Esc should close it");
+    }
+
+    /// A bare `o` stays search text.
+    #[tokio::test]
+    async fn a_plain_o_is_typed_not_a_shortcut() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(key(KeyCode::Char('o'))), |_| {});
+        store.settle();
+        assert!(store.state().picker.is_none());
+        assert_eq!(store.state().library().unwrap().albums.query, "o");
     }
 
     #[tokio::test]

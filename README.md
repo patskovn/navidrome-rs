@@ -20,7 +20,8 @@ is ported from it.
   metadata on the right. Artwork is drawn as colour half-blocks, so it needs no
   terminal graphics protocol.
 - **Playback** with play/pause, next/previous, and volume. Unplugging an output
-  moves playback to another device and resumes where it left off; `o` picks one. The sounding track
+  moves playback to another device and resumes where it left off; `Ctrl-O`
+  picks one. The sounding track
   is marked in whichever list it appears in.
 - **Progressive streaming** — a track starts playing before it has finished
   downloading.
@@ -43,11 +44,11 @@ is ported from it.
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume |
-| `o` | output device picker |
+| `Ctrl-O` | output device picker |
 | `q` / `Ctrl-C` | quit |
 
 Single-key shortcuts (`space`, `n`, `p`, `q`, `+`, `-`) are commands only when
-focus is in the list. In the search field they are text — `q` is a query, not
+focus is in the list. `Tab`, `Ctrl-O` and `Ctrl-C` always work. In the search field they are text — `q` is a query, not
 quit. `Tab` and `Ctrl-C` always work.
 
 ## Design notes
