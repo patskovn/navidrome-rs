@@ -104,7 +104,7 @@ fn draw_tabs(ctx: &mut DrawingContext, store: &Store<State, Action>) {
         spans.push(Span::styled(format!(" {} ", tab.title()), style));
     }
     spans.push(Span::styled(
-        "   Tab switch · ↑↓ focus · space play/pause · n/p · +/- · q quit",
+        "   Tab switch · ↑↓ focus · ? help",
         Theme::dim(),
     ));
 
