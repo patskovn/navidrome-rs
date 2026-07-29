@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -233,7 +234,47 @@ impl TrackCache {
             track_id: track_id.to_string(),
             partial: self.partial_path_for(track_id, suffix),
             final_path: self.path_for(track_id, suffix),
+            progress: DownloadProgress::default(),
         }
+    }
+}
+
+/// How much of a streaming track has landed on disk.
+///
+/// Shared with the audio thread, which reports it as an event. The numbers are
+/// bytes and the bar reads them as a fraction of the whole file, which maps to
+/// *time* only for a constant bitrate — close enough for an indicator, and it
+/// never claims more than has actually arrived.
+#[derive(Debug, Clone, Default)]
+pub struct DownloadProgress {
+    downloaded: Arc<AtomicU64>,
+    /// Content length, or 0 when the server did not say.
+    total: Arc<AtomicU64>,
+}
+
+impl DownloadProgress {
+    /// `None` when the total is unknown, so callers can show nothing rather
+    /// than guess.
+    pub fn fraction(&self) -> Option<f64> {
+        let total = self.total.load(Ordering::Relaxed);
+        if total == 0 {
+            return None;
+        }
+        let downloaded = self.downloaded.load(Ordering::Relaxed) as f64;
+        Some((downloaded / total as f64).clamp(0.0, 1.0))
+    }
+
+    fn set_total(&self, total: u64) {
+        self.total.store(total, Ordering::Relaxed);
+    }
+
+    /// Records a high-water mark rather than a running sum.
+    ///
+    /// The writer can be seeked, so counting bytes written would over-report on
+    /// any retry. `stream-download` fills sequentially, which makes the furthest
+    /// offset written the same thing as "how much we have from the start".
+    fn reached(&self, offset: u64) {
+        self.downloaded.fetch_max(offset, Ordering::Relaxed);
     }
 }
 
@@ -244,6 +285,15 @@ pub struct CacheStorageProvider {
     track_id: String,
     partial: PathBuf,
     final_path: PathBuf,
+    progress: DownloadProgress,
+}
+
+impl CacheStorageProvider {
+    /// Handle to watch this download with. Take it before handing the provider
+    /// to `stream-download`, which consumes it.
+    pub fn progress(&self) -> DownloadProgress {
+        self.progress.clone()
+    }
 }
 
 impl StorageProvider for CacheStorageProvider {
@@ -258,6 +308,8 @@ impl StorageProvider for CacheStorageProvider {
         let writer = File::create(&self.partial)?;
         let reader = File::open(&self.partial)?;
 
+        self.progress.set_total(content_length.unwrap_or(0));
+
         Ok((
             reader,
             CacheWriter {
@@ -268,6 +320,8 @@ impl StorageProvider for CacheStorageProvider {
                 final_path: self.final_path,
                 content_length,
                 promoted: false,
+                offset: 0,
+                progress: self.progress,
             },
         ))
     }
@@ -284,6 +338,9 @@ pub struct CacheWriter {
     final_path: PathBuf,
     content_length: Option<u64>,
     promoted: bool,
+    /// Write cursor, mirrored here so progress costs no `seek`/`metadata` call.
+    offset: u64,
+    progress: DownloadProgress,
 }
 
 impl CacheWriter {
@@ -322,7 +379,10 @@ impl CacheWriter {
 
 impl Write for CacheWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.file.write(buf)
+        let written = self.file.write(buf)?;
+        self.offset += written as u64;
+        self.progress.reached(self.offset);
+        Ok(written)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -334,7 +394,8 @@ impl Write for CacheWriter {
 
 impl Seek for CacheWriter {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        self.file.seek(pos)
+        self.offset = self.file.seek(pos)?;
+        Ok(self.offset)
     }
 }
 
@@ -404,6 +465,67 @@ mod test {
             cache.lookup("mid", Some("flac")).is_none(),
             "least recently used should have gone first"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Opens a writer against a throwaway cache, with the progress handle taken
+    /// the way the audio thread takes it.
+    fn writing_track(
+        dir: &Path,
+        content_length: Option<u64>,
+    ) -> (DownloadProgress, CacheWriter, Arc<TrackCache>) {
+        let cache = Arc::new(TrackCache::new(dir, 1024).unwrap());
+        let provider = cache.storage_provider("t", Some("flac"));
+        let progress = provider.progress();
+        let (_reader, writer) = provider.into_reader_writer(content_length).unwrap();
+        (progress, writer, cache)
+    }
+
+    #[test]
+    fn progress_tracks_bytes_against_the_content_length() {
+        let dir = temp_dir("progress");
+        let (progress, mut writer, _cache) = writing_track(&dir, Some(100));
+
+        assert_eq!(progress.fraction(), Some(0.0), "nothing written yet");
+
+        writer.write_all(&[0u8; 25]).unwrap();
+        assert_eq!(progress.fraction(), Some(0.25));
+
+        writer.write_all(&[0u8; 75]).unwrap();
+        assert_eq!(progress.fraction(), Some(1.0));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Without a content length there is nothing to be a fraction of, and the
+    /// bar draws no dotted tail rather than inventing one.
+    #[test]
+    fn progress_is_unknown_without_a_content_length() {
+        let dir = temp_dir("progress-unknown");
+        let (progress, mut writer, _cache) = writing_track(&dir, None);
+
+        writer.write_all(&[0u8; 50]).unwrap();
+        assert_eq!(progress.fraction(), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The writer can be seeked, so progress is a high-water mark. Counting
+    /// bytes written would let a retry report more than has arrived.
+    #[test]
+    fn seeking_backwards_does_not_rewind_progress() {
+        let dir = temp_dir("progress-seek");
+        let (progress, mut writer, _cache) = writing_track(&dir, Some(100));
+
+        writer.write_all(&[0u8; 80]).unwrap();
+        assert_eq!(progress.fraction(), Some(0.8));
+
+        writer.seek(SeekFrom::Start(10)).unwrap();
+        assert_eq!(progress.fraction(), Some(0.8), "a seek is not a loss");
+
+        writer.write_all(&[0u8; 10]).unwrap();
+        assert_eq!(progress.fraction(), Some(0.8), "rewritten, not new");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 

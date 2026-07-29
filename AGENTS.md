@@ -175,6 +175,17 @@ Reducers are testable because the server sits behind the `Library` trait; use
   under the parallel runner. Note `ACCENT_UNFOCUSED` is `Gray` rather than the
   darker `DIM`: the accent also backs the selected row through `selection()`,
   which reverses it into a background.
+- **Download progress is bytes, drawn against time.** `DownloadProgress`
+  (`audio/cache.rs`) is a byte high-water mark over the content length, and the
+  scrubber plots it on an axis that is really elapsed/duration. Those agree only
+  at a constant bitrate; it is an indicator, not a seek target. It is a
+  high-water mark rather than a running sum because the writer can be seeked,
+  and it is clamped to never render behind the playhead — audio cannot come out
+  of bytes we do not have, so a backwards reading is a stale sample.
+- **Buffer events are rate-limited, not just throttled by the tick.** The engine
+  only emits `Buffered` when the figure moves by `BUFFER_REPORT_STEP`. Every
+  event wakes the store and costs a repaint, so a stalled download would
+  otherwise redraw five times a second to say nothing.
 - **Partial downloads.** A track streams into `<id>.<ext>.part` and is promoted
   to its final name only once the full content length has landed, so an
   interrupted download is never mistaken for a complete file. Stale `.part`

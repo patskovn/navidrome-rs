@@ -26,7 +26,9 @@ is ported from it.
   picks one. The sounding track
   is marked in whichever list it appears in.
 - **Progressive streaming** — a track starts playing before it has finished
-  downloading.
+  downloading, and the scrubber shows how far ahead the download has got:
+  `━` played, `─` downloaded, `┄` not here yet. Solid means the bytes are on
+  disk, so a cached track reads as an ordinary progress bar.
 - **2 GiB LRU disk cache** of original files, populated as a side effect of
   streaming rather than by a second download.
 - **Focus-aware accent.** When the terminal window loses focus the accent drops

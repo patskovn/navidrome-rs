@@ -9,7 +9,6 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::BorderType;
 use ratatui::widgets::Borders;
-use ratatui::widgets::LineGauge;
 use ratatui::widgets::Paragraph;
 use tca::Store;
 
@@ -212,7 +211,14 @@ fn draw_player(
         .current_track()
         .map(|t| t.duration_display())
         .unwrap_or_else(|| "--:--".into());
-    draw_scrubber(ctx.frame(), rows[1], &elapsed, &total, player.progress());
+    draw_scrubber(
+        ctx.frame(),
+        rows[1],
+        &elapsed,
+        &total,
+        player.progress(),
+        player.buffered,
+    );
 
     let footer = match &player.error {
         Some(error) => Line::from(error.as_str()).style(Style::new().fg(Theme::ERROR)),
@@ -238,32 +244,52 @@ fn draw_scrubber(
     elapsed: &str,
     total: &str,
     ratio: f64,
+    buffered: Option<f64>,
 ) {
-    // The elapsed column is sized exactly: `LineGauge` always reserves one cell
-    // after its label — even an empty one — which supplies the gap on that side.
+    // One space of breathing room on each side, matching what the old
+    // `LineGauge` reserved for itself after its label.
     let columns = Layout::horizontal([
-        Constraint::Length(elapsed.chars().count() as u16),
+        Constraint::Length(elapsed.chars().count() as u16 + 1),
         Constraint::Fill(1),
         Constraint::Length(total.chars().count() as u16 + 1),
     ])
     .split(area);
 
     frame.render_widget(Paragraph::new(elapsed), columns[0]);
-
-    let gauge = LineGauge::default()
-        .ratio(ratio.clamp(0.0, 1.0))
-        // Suppressed: an unset label falls back to a percentage readout.
-        .label("")
-        .filled_symbol("━")
-        .unfilled_symbol("─")
-        .filled_style(Theme::accent())
-        .unfilled_style(Theme::dim());
-    frame.render_widget(gauge, columns[1]);
-
+    frame.render_widget(bar(ratio, buffered, columns[1].width), columns[1]);
     frame.render_widget(
         Paragraph::new(Line::from(total).right_aligned()).style(Theme::dim()),
         columns[2],
     );
+}
+
+/// The bar itself: played, downloaded-but-unplayed, and not yet fetched.
+///
+/// Solid means the bytes are here and dotted means they are not, so a fully
+/// cached track looks like an ordinary progress bar and a streaming one grows
+/// its solid section towards the end. Hand-drawn rather than a `LineGauge`,
+/// which only knows one ratio.
+fn bar(ratio: f64, buffered: Option<f64>, width: u16) -> Line<'static> {
+    const PLAYED: &str = "━";
+    const HAVE: &str = "─";
+    const MISSING: &str = "┄";
+
+    let width = width as usize;
+    let cells =
+        |fraction: f64| ((fraction.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
+
+    let played = cells(ratio);
+    // Never behind the playhead: audio cannot come out of bytes we do not have,
+    // and a bar saying otherwise would look like a glitch rather than a fact.
+    // Without a content length there is nothing to be a fraction of, so the
+    // whole bar is drawn as present rather than guessed at.
+    let have = buffered.map_or(width, |b| cells(b).max(played));
+
+    Line::from(vec![
+        Span::styled(PLAYED.repeat(played), Theme::accent()),
+        Span::styled(HAVE.repeat(have - played), Theme::dim()),
+        Span::styled(MISSING.repeat(width - have), Theme::dim()),
+    ])
 }
 
 /// The output picker: system default plus every device the host offers.
@@ -492,9 +518,20 @@ mod tests {
 
     /// Renders one scrubber row and returns it as text.
     fn row(width: u16, elapsed: &str, total: &str, ratio: f64) -> String {
+        buffered_row(width, elapsed, total, ratio, None)
+    }
+
+    /// The same, with a known download extent.
+    fn buffered_row(
+        width: u16,
+        elapsed: &str,
+        total: &str,
+        ratio: f64,
+        buffered: Option<f64>,
+    ) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("test backend");
         terminal
-            .draw(|frame| draw_scrubber(frame, frame.area(), elapsed, total, ratio))
+            .draw(|frame| draw_scrubber(frame, frame.area(), elapsed, total, ratio, buffered))
             .expect("draw");
         terminal.backend().buffer().content()[..width as usize]
             .iter()
@@ -506,7 +543,7 @@ mod tests {
     fn buffer(width: u16, ratio: f64) -> ratatui::buffer::Buffer {
         let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("test backend");
         terminal
-            .draw(|frame| draw_scrubber(frame, frame.area(), "1:23", "4:56", ratio))
+            .draw(|frame| draw_scrubber(frame, frame.area(), "1:23", "4:56", ratio, None))
             .expect("draw");
         terminal.backend().buffer().clone()
     }
@@ -533,6 +570,59 @@ mod tests {
             Some(Theme::ACCENT_UNFOCUSED),
             "an unfocused window should draw the accent grey"
         );
+    }
+
+    /// `cargo test -- --ignored --nocapture preview_buffer`
+    #[test]
+    #[ignore = "visual check only"]
+    fn preview_buffer() {
+        for (label, ratio, buffered) in [
+            ("just started, barely any downloaded", 0.02, Some(0.10)),
+            ("playing, download running ahead", 0.30, Some(0.65)),
+            ("download finished, still playing", 0.30, None::<f64>),
+            ("cache hit — everything is here", 0.55, Some(1.0)),
+            ("stalled — playhead caught the buffer", 0.40, Some(0.40)),
+        ] {
+            println!(
+                "{}  {label}",
+                buffered_row(46, "1:23", "4:56", ratio, buffered)
+            );
+        }
+    }
+
+    #[test]
+    fn the_undownloaded_tail_is_dotted() {
+        let line = buffered_row(30, "1:23", "4:56", 0.25, Some(0.5));
+        let bar = &line[5..line.len() - 5];
+
+        assert_eq!(bar.matches('━').count(), 5, "played: {bar:?}");
+        assert_eq!(bar.matches('─').count(), 5, "downloaded, unplayed: {bar:?}");
+        assert_eq!(bar.matches('┄').count(), 10, "not downloaded: {bar:?}");
+    }
+
+    /// Solid throughout, so a cached track looks like an ordinary progress bar.
+    #[test]
+    fn a_fully_downloaded_track_has_no_dots() {
+        for buffered in [Some(1.0), None] {
+            let line = buffered_row(30, "1:23", "4:56", 0.5, buffered);
+            assert!(
+                !line.contains('┄'),
+                "{buffered:?} should be solid: {line:?}"
+            );
+            assert_eq!(line[5..line.len() - 5].matches('━').count(), 10);
+        }
+    }
+
+    /// Audio cannot come out of bytes we do not have, so a buffer reading that
+    /// trails the playhead is a stale sample, not something to draw.
+    #[test]
+    fn the_buffer_never_renders_behind_the_playhead() {
+        let line = buffered_row(30, "1:23", "4:56", 0.75, Some(0.25));
+        let bar = &line[5..line.len() - 5];
+
+        assert_eq!(bar.matches('━').count(), 15, "played wins: {bar:?}");
+        assert_eq!(bar.matches('─').count(), 0, "no backwards gap: {bar:?}");
+        assert_eq!(bar.matches('┄').count(), 5);
     }
 
     #[test]

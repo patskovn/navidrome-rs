@@ -19,12 +19,18 @@ use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 use stream_download::{Settings, StreamDownload};
 use tokio::sync::mpsc;
 
-use super::cache::TrackCache;
+use super::cache::{DownloadProgress, TrackCache};
 use super::tap::{SampleTap, Tapped};
 use crate::subsonic::Track;
 
 /// How often the engine reports playback position while a track runs.
 const POSITION_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Smallest change in download progress worth an event.
+///
+/// The bar is a few dozen cells wide, so anything finer than this cannot move
+/// it — and every event costs a full repaint.
+const BUFFER_REPORT_STEP: f64 = 0.01;
 
 /// Instructions to the playback thread.
 #[derive(Debug)]
@@ -59,6 +65,13 @@ pub enum Event {
     /// Playback position advanced.
     Position {
         elapsed: Duration,
+    },
+    /// How much of the current track is on disk, 0.0..=1.0.
+    ///
+    /// Reported only when the server gave a content length; without one there
+    /// is nothing to be a fraction of.
+    Buffered {
+        ratio: f64,
     },
     /// The current track ran to completion.
     Finished,
@@ -197,22 +210,26 @@ impl<T: Read + Seek + Send + Sync> ReadSeekSend for T {}
 ///
 /// On a miss it streams over HTTP *into* the cache, so playback can start
 /// before the download finishes and the file is still cached at the end.
+/// The `DownloadProgress` is `None` for a cache hit: the whole file is already
+/// on disk, so there is nothing to watch.
 async fn open_source(
     cache: &Arc<TrackCache>,
     track: &Track,
     url: &str,
-) -> anyhow::Result<Playable> {
+) -> anyhow::Result<(Playable, Option<DownloadProgress>)> {
     if let Some(path) = cache.lookup(&track.id, track.suffix.as_deref()) {
         log::debug!("cache hit for {}", track.id);
-        return Ok(Box::new(std::fs::File::open(path)?));
+        return Ok((Box::new(std::fs::File::open(path)?), None));
     }
 
     log::debug!("streaming {} from the server", track.id);
     let provider = cache.storage_provider(&track.id, track.suffix.as_deref());
+    // Taken before the provider is consumed by `stream-download`.
+    let progress = provider.progress();
     let stream = StreamDownload::new_http(url.parse()?, provider, Settings::default())
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))?;
-    Ok(Box::new(stream))
+    Ok((Box::new(stream), Some(progress)))
 }
 
 fn run(
@@ -239,6 +256,14 @@ fn run(
     // `Player`, so the track has to be re-opened and seeked.
     let mut current: Option<(Track, String)> = None;
     let mut volume = 1.0f32;
+
+    // The download behind the current track, while one is in flight. `None`
+    // means nothing to watch: a cache hit, or nothing playing.
+    let mut buffering: Option<DownloadProgress> = None;
+    // Last value reported, so an unchanging one is not re-sent. Every event
+    // wakes the store and costs a redraw, and a stalled download would
+    // otherwise repaint five times a second saying the same thing.
+    let mut reported_buffer = f64::NEG_INFINITY;
 
     // Tracks whether we have already reported the end of the current track, so
     // an idle player does not emit `Finished` on every tick.
@@ -285,11 +310,15 @@ fn run(
 
                     if was_playing
                         && let Some((track, url)) = current.clone()
-                        && let Ok(source) = runtime.block_on(open_source(&cache, &track, &url))
+                        && let Ok((source, progress)) =
+                            runtime.block_on(open_source(&cache, &track, &url))
                         && let Ok(decoded) = rodio::Decoder::new(source)
                     {
                         player.append(Tapped::new(decoded, tap.clone()));
                         player.play();
+                        // A rebuild re-opens the track, so this is a new
+                        // download to watch — or a cache hit, if it finished.
+                        buffering = progress;
                         if let Err(err) = player.try_seek(resume_at) {
                             log::warn!("could not resume at {resume_at:?}: {err}");
                         }
@@ -319,7 +348,7 @@ fn run(
                 current = Some((track.clone(), url.clone()));
 
                 match runtime.block_on(open_source(&cache, &track, &url)) {
-                    Ok(source) => match rodio::Decoder::new(source) {
+                    Ok((source, progress)) => match rodio::Decoder::new(source) {
                         Ok(decoded) => {
                             player.append(Tapped::new(decoded, tap.clone()));
                             player.play();
@@ -328,6 +357,17 @@ fn run(
                                 track_id: track.id.clone(),
                             });
                             let _ = events.send(Event::Paused(false));
+                            // Reported up front so the bar is right on the very
+                            // first frame: a cache hit is wholly buffered, and
+                            // a fresh stream starts near zero.
+                            let _ = events.send(Event::Buffered {
+                                ratio: match &progress {
+                                    Some(p) => p.fraction().unwrap_or(0.0),
+                                    None => 1.0,
+                                },
+                            });
+                            buffering = progress;
+                            reported_buffer = f64::NEG_INFINITY;
                         }
                         Err(err) => {
                             let _ = events.send(Event::Failed(format!(
@@ -357,6 +397,8 @@ fn run(
                 tap.mark_idle();
                 playing = false;
                 current = None;
+                buffering = None;
+                reported_buffer = f64::NEG_INFINITY;
                 let _ = events.send(Event::Paused(true));
             }
             Ok(Some(Command::SetVolume(level))) => {
@@ -384,11 +426,13 @@ fn run(
 
                         if was_playing
                             && let Some((track, url)) = current.clone()
-                            && let Ok(source) = runtime.block_on(open_source(&cache, &track, &url))
+                            && let Ok((source, progress)) =
+                                runtime.block_on(open_source(&cache, &track, &url))
                             && let Ok(decoded) = rodio::Decoder::new(source)
                         {
                             player.append(Tapped::new(decoded, tap.clone()));
                             player.play();
+                            buffering = progress;
                             let _ = player.try_seek(resume_at);
                         } else {
                             playing = false;
@@ -417,11 +461,28 @@ fn run(
             if player.empty() {
                 playing = false;
                 tap.mark_idle();
+                buffering = None;
                 let _ = events.send(Event::Finished);
             } else if !player.is_paused() {
                 let _ = events.send(Event::Position {
                     elapsed: player.get_pos(),
                 });
+            }
+        }
+
+        // Reported even while paused: the download keeps running, and watching
+        // it fill is half the point of showing it.
+        if let Some(progress) = &buffering
+            && let Some(ratio) = progress.fraction()
+        {
+            // A move too small to shift a cell on the bar is not worth a frame.
+            if ratio - reported_buffer >= BUFFER_REPORT_STEP || ratio >= 1.0 {
+                reported_buffer = ratio;
+                let _ = events.send(Event::Buffered { ratio });
+            }
+            if ratio >= 1.0 {
+                // Nothing left to watch; stop waking the store for it.
+                buffering = None;
             }
         }
     }

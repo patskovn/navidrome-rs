@@ -28,6 +28,12 @@ pub struct State {
     /// Outputs as `(id, description)`, and the id in use.
     pub devices: Vec<(String, String)>,
     pub active_device: Option<String>,
+    /// How much of the current track is on disk, 0.0..=1.0.
+    ///
+    /// `None` while the amount is unknowable — nothing playing, or a server
+    /// that sent no content length. The bar draws no dotted tail in that case
+    /// rather than claiming the track is unbuffered.
+    pub buffered: Option<f64>,
 }
 
 impl State {
@@ -192,6 +198,13 @@ impl Feature {
             Event::Started { .. } => {
                 state.is_playing = true;
                 state.elapsed = Duration::ZERO;
+                // The engine reports the new track's buffer immediately after
+                // this; clearing it stops the old track's tail leaking across.
+                state.buffered = None;
+                Effect::none()
+            }
+            Event::Buffered { ratio } => {
+                state.buffered = Some(ratio);
                 Effect::none()
             }
             Event::Position { elapsed } => {
@@ -265,6 +278,39 @@ mod test {
 
     fn store() -> TestStore<Feature> {
         TestStore::new(feature(), State::new())
+    }
+
+    #[tokio::test]
+    async fn buffering_is_recorded_and_reset_between_tracks() {
+        let mut store = store();
+        assert_eq!(
+            store.state().buffered,
+            None,
+            "nothing playing, nothing known"
+        );
+
+        store.send(
+            Action::Engine(crate::audio::Event::Buffered { ratio: 0.4 }),
+            |s| s.buffered = Some(0.4),
+        );
+
+        // A new track must not inherit the last one's tail. The engine reports
+        // the new figure immediately after `Started`, so the gap is one action.
+        store.send(
+            Action::Engine(crate::audio::Event::Started {
+                track_id: "b".into(),
+            }),
+            |s| {
+                s.is_playing = true;
+                s.buffered = None;
+            },
+        );
+
+        store.send(
+            Action::Engine(crate::audio::Event::Buffered { ratio: 1.0 }),
+            |s| s.buffered = Some(1.0),
+        );
+        store.finish();
     }
 
     #[tokio::test]
