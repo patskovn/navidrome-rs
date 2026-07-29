@@ -12,17 +12,18 @@ is ported from it.
 - **Sign in** with server URL, username and password. Credentials are verified
   before being saved. Credentials live in `config.json`, written `0600`.
   Set `NAVIDROME_PASSWORD` to override the stored one and keep it off disk.
-- **Tabs**: Albums and All Music, `Tab` to switch. They ride the content
+- **Tabs**: Albums, All Music and Queue, `Tab` to switch. They ride the content
   frame's own border rather than taking a row of their own.
-- **Live search in both tabs.** The field is focused on arrival and takes every
-  key except the three reserved ones; results update as you type, debounced at
-  250ms. An empty query falls back to the full listing.
+- **Live search in both browse tabs.** The field is focused on arrival and takes
+  every key except the three reserved ones; results update as you type, debounced
+  at 250ms. An empty query falls back to the full listing.
 - **Album view**: Enter opens an album — tracks on the left, cover art and
   metadata on the right. The panel is where the album's name lives; the border
   does not repeat it. Artwork is drawn as colour half-blocks, so it needs no
   terminal graphics protocol.
-- **The play queue** opens over any tab with `Ctrl-Q`, on whatever is playing.
-  Tracks can be played out of order or dropped from it.
+- **Queue tab**: the play order, opening on whatever is sounding. `↵` plays a
+  track out of turn, `d` drops one. It has no search field, so single letters
+  are commands there.
 - **Playback** with play/pause, next/previous, and volume. Unplugging an output
   moves playback to another device and resumes where it left off; `Ctrl-O`
   picks one. The sounding track
@@ -51,21 +52,21 @@ is ported from it.
 | `j` / `k` / `↑` / `↓` | move in a list |
 | `Enter` | open an album, or play a track |
 | `Esc` / `←` | back out of an open album |
+| `d` / `Delete` | drop a track, in the Queue tab |
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume |
-| `Ctrl-Q` | open the play queue |
 | `?` | show all keys |
 | `Ctrl-O` | output device picker |
 | `q` / `Ctrl-C` | quit |
 
-In the queue: `↑↓`/`jk` move, `↵` plays that track, `d` (or Delete) drops it,
-`Esc` closes. Dropping the sounding track moves playback to whatever followed
-it, or stops if nothing did.
+Dropping the sounding track moves playback to whatever followed it, or stops if
+nothing did.
 
-Single-key shortcuts (`space`, `n`, `p`, `q`, `+`, `-`) are commands only when
-focus is in the list. `Tab`, `Ctrl-O`, `Ctrl-Q` and `Ctrl-C` always work. In the search field they are text — `q` is a query, not
-quit. `Tab` and `Ctrl-C` always work.
+Single-key shortcuts (`space`, `n`, `p`, `q`, `+`, `-`) are commands whenever a
+search field does not have focus — which on the Queue tab is always. In a search
+field they are text: `q` is a query, not quit. `Tab`, `Ctrl-O` and `Ctrl-C` work
+from anywhere.
 
 ## Design notes
 

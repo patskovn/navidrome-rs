@@ -44,7 +44,6 @@ src/
 │   ├── auth.rs      sign-in form
 │   ├── albums.rs    Albums tab
 │   ├── songs.rs     All Music tab
-│   ├── search.rs    Search tab
 │   ├── player.rs    queue and transport
 │   └── ui.rs        drawing for the root feature
 └── ui/              widgets ported from tgpt (see note below)
@@ -165,6 +164,12 @@ Reducers are testable because the server sits behind the `Library` trait; use
   `Player`, so it has to be reapplied or the track resumes at full volume.
   Resuming also means re-opening the track and seeking, since the new player
   starts empty.
+- **The Queue tab is not a scoped child feature, deliberately.** Its only state
+  is a cursor (`Library::queue_cursor`), but every key needs the queue's *length*
+  to clamp against, and the queue lives in `player::State`. A child reducer would
+  see only the cursor, so it would have to be handed a copy of the length to keep
+  in sync — two sources of truth for one number. Its keys are handled in
+  `entry::reduce_queue_key`, where both are visible.
 - **`player::State::current` is an index, so every queue edit must maintain
   it.** Dropping an entry before the playhead shifts the playhead down with it;
   dropping the playhead's own entry leaves the index pointing at whatever

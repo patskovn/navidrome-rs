@@ -64,11 +64,6 @@ pub fn draw(
         ctx.queue_modal(move |frame, area| draw_picker(frame, area, &picker, &player));
     }
 
-    if let Some(queue) = store.state().queue.clone() {
-        let player = store.state().player.clone();
-        ctx.queue_modal(move |frame, area| draw_queue(frame, area, &queue, &player));
-    }
-
     ctx.flush_modals();
 }
 
@@ -157,6 +152,12 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
                 Action::Songs,
             ),
             playing.as_deref(),
+        ),
+        Tab::Queue => draw_queue(
+            ctx.frame(),
+            inner,
+            library.queue_cursor,
+            &store.state().player,
         ),
     }
 }
@@ -365,47 +366,33 @@ fn draw_picker(
     StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
 }
 
-/// The play queue, with the sounding track marked.
+/// The Queue tab: the play order, with the sounding track marked.
+///
+/// A plain pane rather than a modal — it draws into the tab's own frame and so
+/// has no border of its own.
 fn draw_queue(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
-    queue: &crate::app::entry::QueueView,
+    cursor: usize,
     player: &crate::app::player::State,
 ) {
-    use ratatui::layout::Constraint;
-    use ratatui::widgets::{Clear, List, ListItem, ListState, StatefulWidget, Widget};
-
-    use crate::ui::layout::centered_constraint;
-    use crate::ui::layout::centered_pct;
-
-    let rows = player.queue.len().clamp(1, 14) as u16 + 2;
-    let vertical = centered_constraint(
-        area,
-        Constraint::Length(rows.min(area.height)),
-        ratatui::layout::Direction::Vertical,
-    );
-    let modal = centered_pct(vertical, ratatui::layout::Direction::Horizontal, 70);
-
-    Clear.render(modal, frame.buffer_mut());
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(format!(" Queue · {} tracks ", player.queue.len()))
-        .title_bottom(" ↵ play · d remove · Esc close ")
-        .border_style(Theme::accent());
-    let inner = block.inner(modal);
-    frame.render_widget(block, modal);
+    use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 
     if player.queue.is_empty() {
-        frame.render_widget(Paragraph::new(" Nothing queued").style(Theme::dim()), inner);
+        frame.render_widget(
+            Paragraph::new(" Nothing queued. Play an album or a track to fill it.")
+                .style(Theme::dim()),
+            area,
+        );
         return;
     }
+
+    let rows = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).split(area);
 
     // Everything the row spends besides the title: the highlight symbol the
     // list reserves, "999. ", a gap, a right-aligned duration, and a margin.
     const FURNITURE: u16 = 2 + 5 + 1 + 6 + 1;
-    let room = inner.width.saturating_sub(FURNITURE) as usize;
+    let room = rows[0].width.saturating_sub(FURNITURE) as usize;
     let items: Vec<ListItem> = player
         .queue
         .iter()
@@ -430,8 +417,13 @@ fn draw_queue(
         .highlight_style(Theme::selection())
         .highlight_symbol("▶ ");
     let mut state = ListState::default();
-    state.select(Some(queue.selected.min(player.queue.len() - 1)));
-    StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
+    state.select(Some(cursor.min(player.queue.len() - 1)));
+    StatefulWidget::render(list, rows[0], frame.buffer_mut(), &mut state);
+
+    frame.render_widget(
+        Paragraph::new(" ↵ play · d remove").style(Theme::dim()),
+        rows[1],
+    );
 }
 
 /// Every binding, including the ones the footer no longer has room for.
@@ -449,12 +441,12 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("j k", "move in a list"),
         ("↵", "open an album, or play a track"),
         ("Esc ←", "back out of an open album"),
+        ("d", "drop a track, in the Queue tab"),
         ("", ""),
         ("space", "play / pause"),
         ("n p", "next / previous track"),
         ("+ -", "volume"),
         ("", ""),
-        ("Ctrl-Q", "open the play queue"),
         ("Ctrl-O", "choose an audio output"),
         ("?", "this help"),
         ("q", "quit"),
@@ -515,7 +507,7 @@ mod tests {
     fn queue_rows(width: u16, titles: &[(&str, i64)]) -> Vec<String> {
         use std::sync::Arc;
 
-        use crate::app::entry::{Feature, QueueView, Session};
+        use crate::app::entry::{Feature, Library, Session, Tab};
         use crate::audio::{AudioEngine, TrackCache};
         use crate::subsonic::{SwappableLibrary, Track, fake::FakeLibrary};
 
@@ -530,8 +522,10 @@ mod tests {
                 audio,
             },
             State {
-                session: Session::SignedIn(Box::default()),
-                queue: Some(QueueView { selected: 0 }),
+                session: Session::SignedIn(Box::new(Library {
+                    tab: Tab::Queue,
+                    ..Default::default()
+                })),
                 player: crate::app::player::State {
                     queue: titles
                         .iter()
@@ -589,7 +583,7 @@ mod tests {
     async fn preview_queue() {
         use std::sync::Arc;
 
-        use crate::app::entry::{Feature, QueueView, Session};
+        use crate::app::entry::{Feature, Library, Session, Tab};
         use crate::audio::{AudioEngine, TrackCache};
         use crate::subsonic::{SwappableLibrary, Track, fake::FakeLibrary};
 
@@ -611,8 +605,11 @@ mod tests {
                 audio,
             },
             State {
-                session: Session::SignedIn(Box::default()),
-                queue: Some(QueueView { selected: 2 }),
+                session: Session::SignedIn(Box::new(Library {
+                    tab: Tab::Queue,
+                    queue_cursor: 2,
+                    ..Default::default()
+                })),
                 player: crate::app::player::State {
                     queue: vec![
                         track("So What", "Miles Davis", 545),
