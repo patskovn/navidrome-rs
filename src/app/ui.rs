@@ -176,23 +176,21 @@ fn draw_player(
     let area = ctx.area();
     ctx.frame().render_widget(block, area);
 
-    // Visualiser on the left, transport on the right.
-    let columns =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Fill(1)]).split(inner);
+    let (visualiser, transport) = player_columns(inner);
 
-    let bars = columns[0].width as usize;
+    let bars = visualiser.width as usize;
     spectrum.update(tap, bars);
     let levels = spectrum.levels().to_vec();
     let peaks = spectrum.peaks().to_vec();
     ctx.frame()
-        .render_widget(SpectrumWidget::new(&levels, &peaks), columns[0]);
+        .render_widget(SpectrumWidget::new(&levels, &peaks), visualiser);
 
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .split(columns[1]);
+    .split(transport);
 
     let title = match player.current_track() {
         Some(track) => Line::from(vec![
@@ -230,6 +228,21 @@ fn draw_player(
         .style(Theme::dim()),
     };
     ctx.frame().render_widget(Paragraph::new(footer), rows[2]);
+}
+
+/// Splits the player bar into the visualiser column and the transport column.
+///
+/// The two are separated by a column of air. The spectrum draws to the full
+/// width of its area, so butted straight together a tall bar ends up flush
+/// against the track title.
+fn player_columns(inner: ratatui::layout::Rect) -> (ratatui::layout::Rect, ratatui::layout::Rect) {
+    let columns = Layout::horizontal([
+        Constraint::Percentage(40),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(inner);
+    (columns[0], columns[2])
 }
 
 /// One row: elapsed, a bar, and the track length.
@@ -623,6 +636,25 @@ mod tests {
         assert_eq!(bar.matches('━').count(), 15, "played wins: {bar:?}");
         assert_eq!(bar.matches('─').count(), 0, "no backwards gap: {bar:?}");
         assert_eq!(bar.matches('┄').count(), 5);
+    }
+
+    /// The gap between the spectrum and the transport, which is easy to lose to
+    /// a future layout tweak because nothing about the code demands it.
+    #[test]
+    fn a_column_of_air_separates_the_visualiser_from_the_transport() {
+        use ratatui::layout::Rect;
+
+        for width in [40, 76, 120, 200] {
+            let inner = Rect::new(0, 0, width, 4);
+            let (visualiser, transport) = player_columns(inner);
+
+            assert_eq!(
+                transport.x - (visualiser.x + visualiser.width),
+                1,
+                "expected one blank column at width {width}"
+            );
+            assert!(visualiser.width > 0 && transport.width > 0, "width {width}");
+        }
     }
 
     #[test]
