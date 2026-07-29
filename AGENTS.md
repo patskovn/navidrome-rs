@@ -182,7 +182,11 @@ Reducers are testable because the server sits behind the `Library` trait; use
   Map at the boundary in `subsonic/client.rs`.
 - `ui/` is ported code and carries `#![allow(dead_code)]` — parts of the widget
   API are unused here. Do not trim it; the cost of re-porting later exceeds the
-  benefit.
+  benefit. It also arrived with colours of its own: `ui/list.rs` had a
+  hard-coded blue highlight that ignored `Theme` entirely, so the album and
+  track lists stayed bright when everything else greyed out. Anything that reads
+  as *the accent* must come from `Theme::accent()`/`selection()`, or it will
+  quietly opt out of focus dimming.
 - Comments should explain *why*, especially where a constraint is non-obvious.
   Most of the invariants above exist as comments at their site too.
 - Errors surface to the user through state (`error: Option<String>`) and get
