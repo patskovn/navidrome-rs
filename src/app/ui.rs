@@ -1,4 +1,4 @@
-//! Drawing for the root feature: tab bar, active tab, player bar, visualiser.
+//! Drawing for the root feature: active tab, player bar, visualiser.
 
 use ratatui::Frame;
 use ratatui::layout::Constraint;
@@ -45,16 +45,13 @@ pub fn draw(
         return;
     }
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(PLAYER_HEIGHT),
-    ])
-    .split(ctx.area());
+    // No separate tab row: the tabs ride the content block's own border, which
+    // is a line the layout was spending anyway.
+    let rows = Layout::vertical([Constraint::Fill(1), Constraint::Length(PLAYER_HEIGHT)])
+        .split(ctx.area());
 
-    draw_tabs(&mut ctx.with_area(rows[0]), &store);
-    draw_active_tab(&mut ctx.with_area(rows[1]), &store);
-    draw_player(&mut ctx.with_area(rows[2]), &store, tap, spectrum);
+    draw_active_tab(&mut ctx.with_area(rows[0]), &store);
+    draw_player(&mut ctx.with_area(rows[1]), &store, tap, spectrum);
 
     // Drawn last so it sits above the tab; this is what the ported modal queue
     // was for.
@@ -92,28 +89,27 @@ fn draw_sign_in(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     );
 }
 
-fn draw_tabs(ctx: &mut DrawingContext, store: &Store<State, Action>) {
-    let state = store.state();
-    let active = state.library().map(|l| l.tab).unwrap_or_default();
-
-    let mut spans = Vec::new();
-    for (index, tab) in Tab::ALL.iter().enumerate() {
-        let style = if *tab == active {
-            Theme::accent().bold()
-        } else {
-            Theme::dim()
-        };
-        let _ = index;
-        spans.push(Span::styled(format!(" {} ", tab.title()), style));
+/// The tab strip, as a title for the content block's top border.
+///
+/// The open album's name is deliberately absent: the detail panel on the right
+/// already carries it, and repeating it in the border said the same thing twice.
+fn tab_strip(active: Tab) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ")];
+    for tab in Tab::ALL {
+        if spans.len() > 1 {
+            spans.push(Span::styled(" · ", Theme::dim()));
+        }
+        spans.push(Span::styled(
+            tab.title(),
+            if tab == active {
+                Theme::accent().bold()
+            } else {
+                Theme::dim()
+            },
+        ));
     }
-    spans.push(Span::styled(
-        "   Tab switch · ↑↓ focus · ? help",
-        Theme::dim(),
-    ));
-
-    let area = ctx.area();
-    ctx.frame()
-        .render_widget(Paragraph::new(Line::from(spans)), area);
+    spans.push(Span::raw(" "));
+    Line::from(spans)
 }
 
 fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
@@ -130,13 +126,12 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(format!(
-            " {} ",
-            match library.tab {
-                Tab::Albums => library.albums.tab_title(),
-                Tab::AllMusic => library.tab.title().to_string(),
-            }
-        ));
+        .title(tab_strip(library.tab))
+        // Bottom right, where it stays out of the way of the tabs but is still
+        // on screen — this used to sit beside them in the old top bar.
+        .title_bottom(
+            Line::styled(" Tab switch · ↑↓ focus · ? help ", Theme::dim()).right_aligned(),
+        );
     let inner = block.inner(ctx.area());
     let area = ctx.area();
     ctx.frame().render_widget(block, area);
@@ -400,6 +395,100 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    /// The whole signed-in screen, for eyeballing layout changes.
+    ///
+    /// `cargo test -- --ignored --nocapture preview_screen`
+    #[tokio::test]
+    #[ignore = "visual check only"]
+    async fn preview_screen() {
+        use std::sync::Arc;
+
+        use crate::app::albums::Detail;
+        use crate::app::entry::{Feature, Library, Session};
+        use crate::audio::{AudioEngine, TrackCache};
+        use crate::subsonic::{Album, SwappableLibrary, Track, fake::FakeLibrary};
+        use crate::ui::list;
+
+        let dir = std::env::temp_dir().join("navidrome-preview");
+        let cache = Arc::new(TrackCache::new(&dir, 1024).expect("cache"));
+        let (audio, _events) = AudioEngine::start(cache);
+        let tap = audio.tap().clone();
+        let audio = Arc::new(audio);
+
+        let album = |name: &str, artist: &str, year| Album {
+            name: name.into(),
+            artist: Some(artist.into()),
+            year: Some(year),
+            song_count: Some(5),
+            duration: Some(2793),
+            genre: Some("Jazz".into()),
+            ..Default::default()
+        };
+        let track = |title: &str, seconds| Track {
+            title: title.into(),
+            duration: Some(seconds),
+            ..Default::default()
+        };
+
+        let mut spectrum = Spectrum::new();
+
+        let mut shot = |label: &str, library: Library, size: (u16, u16)| {
+            let mut terminal =
+                Terminal::new(TestBackend::new(size.0, size.1)).expect("test backend");
+            let store = tca::Store::new(
+                Feature {
+                    library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
+                    audio: (*audio).clone(),
+                },
+                State {
+                    session: Session::SignedIn(Box::new(library)),
+                    ..Default::default()
+                },
+            );
+            terminal
+                .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+                .expect("draw");
+            let buffer = terminal.backend().buffer();
+            println!("\n{label}");
+            for y in 0..buffer.area.height {
+                let row: String = (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect();
+                println!("{row}");
+            }
+        };
+
+        let listing = || {
+            let mut library = Library::default();
+            library.albums.items = list::State::new(vec![
+                albums::Row(album("Kind of Blue", "Miles Davis", 1959)),
+                albums::Row(album("A Love Supreme", "John Coltrane", 1965)),
+                albums::Row(album("Mingus Ah Um", "Charles Mingus", 1959)),
+            ]);
+            library.albums.items.select(Some(1));
+            library
+        };
+
+        shot("── album list ──", listing(), (76, 20));
+
+        // With an album open the name lives in the panel on the right, which is
+        // why the border no longer repeats it.
+        let mut open = listing();
+        open.albums.detail = Some(Detail {
+            album: album("Kind of Blue", "Miles Davis", 1959),
+            tracks: vec![
+                track("So What", 545),
+                track("Freddie Freeloader", 586),
+                track("Blue in Green", 337),
+            ],
+            ..Default::default()
+        });
+        // Twice, because the panel's split depends on the height available: a
+        // short terminal must still show the name, a tall one gets real artwork.
+        shot("── album open, short ──", open.clone(), (76, 20));
+        shot("── album open, tall ──", open, (96, 34));
+    }
 
     /// Renders one scrubber row and returns it as text.
     fn row(width: u16, elapsed: &str, total: &str, ratio: f64) -> String {

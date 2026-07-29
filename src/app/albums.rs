@@ -36,17 +36,6 @@ pub struct Detail {
     pub cover: Option<Cover>,
 }
 
-impl State {
-    /// Title for the enclosing tab block. An open album renames the tab rather
-    /// than drawing a window of its own.
-    pub fn tab_title(&self) -> String {
-        match &self.detail {
-            Some(detail) => format!("Albums - {}", detail.album.name),
-            None => "Albums".to_string(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row(pub Album);
 
@@ -481,13 +470,6 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
     let inner = block.inner(area);
     ctx.frame().render_widget(block, area);
 
-    // Square-ish cover area at the top, the rest for facts.
-    let cover_height = inner.height.min(inner.width / 2).min(12);
-    let rows =
-        Layout::vertical([Constraint::Length(cover_height), Constraint::Fill(1)]).split(inner);
-
-    draw_cover(ctx, detail, rows[0]);
-
     let album = &detail.album;
     let mut lines = vec![
         Line::from(Span::styled(album.name.clone(), Theme::accent().bold())),
@@ -540,6 +522,20 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
     lines.push(Line::from("↵ play from here").style(Theme::dim()));
     lines.push(Line::from("Esc back").style(Theme::dim()));
 
+    // The facts claim their rows first and the cover takes what is left, not
+    // the other way round. A square-ish cover on a short terminal would
+    // otherwise fill the panel outright and push the album name off screen —
+    // and this panel is now the only place that name appears.
+    let needed = (lines.len() as u16).min(inner.height);
+    let cover_height = inner
+        .height
+        .saturating_sub(needed)
+        .min(inner.width / 2)
+        .min(12);
+    let rows =
+        Layout::vertical([Constraint::Length(cover_height), Constraint::Fill(1)]).split(inner);
+
+    draw_cover(ctx, detail, rows[0]);
     ctx.frame()
         .render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[1]);
 }
@@ -698,6 +694,75 @@ mod test {
         assert!(
             store.state().items.items.is_empty(),
             "a result from an older query must not be shown"
+        );
+    }
+
+    /// Renders the info panel at `size` and returns it as one string.
+    fn info_panel(size: (u16, u16)) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use crate::ui::DrawingContext;
+        use crate::ui::ModalQueue;
+
+        let detail = Detail {
+            album: Album {
+                name: "Kind of Blue".into(),
+                artist: Some("Miles Davis".into()),
+                year: Some(1959),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut terminal = Terminal::new(TestBackend::new(size.0, size.1)).expect("test backend");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let queue = ModalQueue::new(area);
+                let mut ctx = DrawingContext::new(frame, &queue);
+                draw_info(&mut ctx, &detail, area);
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Regression: the cover claimed its rows first and the facts took what was
+    /// left, so a short terminal gave them zero rows and the album name vanished
+    /// entirely. The tab border no longer repeats that name, so this panel is
+    /// the only place it appears.
+    #[test]
+    fn the_album_name_survives_a_short_panel() {
+        for size in [(34, 6), (34, 10), (34, 20), (60, 40)] {
+            let panel = info_panel(size);
+            assert!(
+                panel.contains("Kind of Blue"),
+                "no album name at {size:?}:\n{panel}"
+            );
+        }
+    }
+
+    /// Given room, the artwork still gets it — the fix must not have pinned the
+    /// cover to nothing.
+    #[test]
+    fn a_tall_panel_still_makes_room_for_artwork() {
+        let panel = info_panel((60, 40));
+        let art_rows = panel
+            .lines()
+            .take_while(|line| !line.contains("Kind of"))
+            .count();
+        assert!(
+            art_rows >= 8,
+            "artwork should keep the top of a tall panel, got {art_rows} rows:\n{panel}"
         );
     }
 

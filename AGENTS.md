@@ -144,6 +144,11 @@ Reducers are testable because the server sits behind the `Library` trait; use
 - **Cache index persistence.** `TrackCache::insert` must persist the index
   itself; relying on `enforce_budget` to do it silently loses entries whenever
   the cache is under budget, which is the common case.
+- **The info panel sizes itself facts-first.** `albums::draw_info` gives the
+  metadata its rows and lets the cover take what is left, not the reverse. A
+  square-ish cover fills a short terminal outright, which used to push the album
+  name off screen — and since the tab border stopped repeating that name, the
+  panel is the only place it appears.
 - **Cover art is colour, on purpose.** `ui/cover.rs` draws artwork as half
   blocks (`▀`, fg = upper pixel, bg = lower), so a cell carries two real
   pixels. This is a deliberate exception to the monochrome rule that governs

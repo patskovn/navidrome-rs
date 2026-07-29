@@ -12,12 +12,14 @@ is ported from it.
 - **Sign in** with server URL, username and password. Credentials are verified
   before being saved. Credentials live in `config.json`, written `0600`.
   Set `NAVIDROME_PASSWORD` to override the stored one and keep it off disk.
-- **Tabs**: Albums and All Music, `Tab` to switch.
+- **Tabs**: Albums and All Music, `Tab` to switch. They ride the content
+  frame's own border rather than taking a row of their own.
 - **Live search in both tabs.** The field is focused on arrival and takes every
   key except the three reserved ones; results update as you type, debounced at
   250ms. An empty query falls back to the full listing.
 - **Album view**: Enter opens an album — tracks on the left, cover art and
-  metadata on the right. Artwork is drawn as colour half-blocks, so it needs no
+  metadata on the right. The panel is where the album's name lives; the border
+  does not repeat it. Artwork is drawn as colour half-blocks, so it needs no
   terminal graphics protocol.
 - **Playback** with play/pause, next/previous, and volume. Unplugging an output
   moves playback to another device and resumes where it left off; `Ctrl-O`
