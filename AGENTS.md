@@ -165,6 +165,13 @@ Reducers are testable because the server sits behind the `Library` trait; use
   `Player`, so it has to be reapplied or the track resumes at full volume.
   Resuming also means re-opening the track and seeking, since the new player
   starts empty.
+- **`player::State::current` is an index, so every queue edit must maintain
+  it.** Dropping an entry before the playhead shifts the playhead down with it;
+  dropping the playhead's own entry leaves the index pointing at whatever
+  followed, which is the track to start next. `State::remove` returns a
+  `Removal` saying which of those happened, so the reducer — not the drawing
+  code — decides what playback does. Get this wrong and removing a row silently
+  changes the song.
 - **Window focus is a global, on purpose.** `Theme::accent()` reads a process
   `AtomicBool` rather than a parameter. `entry::State::focused` is still the
   source of truth — `ui::draw` copies it into the theme once per frame — but the
@@ -210,9 +217,17 @@ Reducers are testable because the server sits behind the `Library` trait; use
   arriving for absent child state, which is normal when an in-flight effect
   races a state transition.
 
+- **List rows must reserve every column they spend.** A `List` with a
+  `highlight_symbol` takes those columns from the item text, so a row's width
+  budget is the inner width *minus* the symbol, the leading number, the gap and
+  the trailing field. `draw_queue`'s `FURNITURE` spells that sum out; getting it
+  wrong truncates the right-hand column rather than the title, which reads as a
+  formatting bug ("11:33" becoming "11:3").
+
 ## Not done yet
 
-No playlists, no artist browsing, no shuffle/repeat. Seek is implemented in the
+No playlists, no artist browsing, no shuffle/repeat. The queue can be viewed
+and pruned but not reordered. Seek is implemented in the
 engine (`audio::Command::Seek`) but not bound to a key. "All Music" loads a page
 of albums and flattens them rather than paging by track, because Subsonic has no
 "all songs" endpoint.

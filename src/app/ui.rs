@@ -15,6 +15,7 @@ use tca::Store;
 use crate::app::entry::Action;
 use crate::app::entry::State;
 use crate::app::entry::Tab;
+use crate::app::truncate;
 use crate::app::{albums, auth, songs};
 use crate::audio::SampleTap;
 use crate::subsonic::format_duration;
@@ -61,6 +62,11 @@ pub fn draw(
     if let Some(picker) = store.state().picker.clone() {
         let player = store.state().player.clone();
         ctx.queue_modal(move |frame, area| draw_picker(frame, area, &picker, &player));
+    }
+
+    if let Some(queue) = store.state().queue.clone() {
+        let player = store.state().player.clone();
+        ctx.queue_modal(move |frame, area| draw_queue(frame, area, &queue, &player));
     }
 
     ctx.flush_modals();
@@ -359,6 +365,75 @@ fn draw_picker(
     StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
 }
 
+/// The play queue, with the sounding track marked.
+fn draw_queue(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    queue: &crate::app::entry::QueueView,
+    player: &crate::app::player::State,
+) {
+    use ratatui::layout::Constraint;
+    use ratatui::widgets::{Clear, List, ListItem, ListState, StatefulWidget, Widget};
+
+    use crate::ui::layout::centered_constraint;
+    use crate::ui::layout::centered_pct;
+
+    let rows = player.queue.len().clamp(1, 14) as u16 + 2;
+    let vertical = centered_constraint(
+        area,
+        Constraint::Length(rows.min(area.height)),
+        ratatui::layout::Direction::Vertical,
+    );
+    let modal = centered_pct(vertical, ratatui::layout::Direction::Horizontal, 70);
+
+    Clear.render(modal, frame.buffer_mut());
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(format!(" Queue · {} tracks ", player.queue.len()))
+        .title_bottom(" ↵ play · d remove · Esc close ")
+        .border_style(Theme::accent());
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    if player.queue.is_empty() {
+        frame.render_widget(Paragraph::new(" Nothing queued").style(Theme::dim()), inner);
+        return;
+    }
+
+    // Everything the row spends besides the title: the highlight symbol the
+    // list reserves, "999. ", a gap, a right-aligned duration, and a margin.
+    const FURNITURE: u16 = 2 + 5 + 1 + 6 + 1;
+    let room = inner.width.saturating_sub(FURNITURE) as usize;
+    let items: Vec<ListItem> = player
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            let item = ListItem::from(format!(
+                "{:>3}. {:<room$} {:>6} ",
+                index + 1,
+                truncate(&track.display(), room),
+                track.duration_display()
+            ));
+            // Colour alone marks the sounding row, as the track lists do.
+            if player.current == Some(index) {
+                item.style(Style::new().fg(Theme::PLAYING))
+            } else {
+                item
+            }
+        })
+        .collect();
+
+    let list = List::new(items)
+        .highlight_style(Theme::selection())
+        .highlight_symbol("▶ ");
+    let mut state = ListState::default();
+    state.select(Some(queue.selected.min(player.queue.len() - 1)));
+    StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
+}
+
 /// Every binding, including the ones the footer no longer has room for.
 fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
     use ratatui::layout::Constraint;
@@ -379,6 +454,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("n p", "next / previous track"),
         ("+ -", "volume"),
         ("", ""),
+        ("Ctrl-Q", "open the play queue"),
         ("Ctrl-O", "choose an audio output"),
         ("?", "this help"),
         ("q", "quit"),
@@ -434,6 +510,143 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+
+    /// Renders the queue modal over the app and returns it as rows.
+    fn queue_rows(width: u16, titles: &[(&str, i64)]) -> Vec<String> {
+        use std::sync::Arc;
+
+        use crate::app::entry::{Feature, QueueView, Session};
+        use crate::audio::{AudioEngine, TrackCache};
+        use crate::subsonic::{SwappableLibrary, Track, fake::FakeLibrary};
+
+        let dir = std::env::temp_dir().join("navidrome-queue-render");
+        let cache = Arc::new(TrackCache::new(&dir, 1024).expect("cache"));
+        let (audio, _events) = AudioEngine::start(cache);
+        let tap = audio.tap().clone();
+
+        let store = tca::Store::new(
+            Feature {
+                library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
+                audio,
+            },
+            State {
+                session: Session::SignedIn(Box::default()),
+                queue: Some(QueueView { selected: 0 }),
+                player: crate::app::player::State {
+                    queue: titles
+                        .iter()
+                        .map(|(title, seconds)| Track {
+                            title: (*title).into(),
+                            duration: Some(*seconds),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    current: Some(0),
+                    ..crate::app::player::State::new()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut spectrum = Spectrum::new();
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).expect("test backend");
+        terminal
+            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Regression: the row reserved too few columns for its furniture, so a
+    /// long track lost the tail of its duration — "11:33" rendered as "11:3".
+    #[tokio::test]
+    async fn queue_durations_are_never_cut_off() {
+        // A title long enough to be truncated at every width tested.
+        let long = "A Love Supreme, Part One: Acknowledgement (Alternate Take)";
+
+        for width in [60, 76, 100, 140] {
+            let rows = queue_rows(width, &[(long, 693), (long, 45)]);
+            for wanted in ["11:33", "0:45"] {
+                assert!(
+                    rows.iter().any(|row| row.contains(wanted)),
+                    "{wanted} missing at width {width}:\n{}",
+                    rows.join("\n")
+                );
+            }
+        }
+    }
+
+    /// `cargo test -- --ignored --nocapture preview_queue`
+    #[tokio::test]
+    #[ignore = "visual check only"]
+    async fn preview_queue() {
+        use std::sync::Arc;
+
+        use crate::app::entry::{Feature, QueueView, Session};
+        use crate::audio::{AudioEngine, TrackCache};
+        use crate::subsonic::{SwappableLibrary, Track, fake::FakeLibrary};
+
+        let dir = std::env::temp_dir().join("navidrome-preview-queue");
+        let cache = Arc::new(TrackCache::new(&dir, 1024).expect("cache"));
+        let (audio, _events) = AudioEngine::start(cache);
+        let tap = audio.tap().clone();
+
+        let track = |title: &str, artist: &str, seconds| Track {
+            title: title.into(),
+            artist: Some(artist.into()),
+            duration: Some(seconds),
+            ..Default::default()
+        };
+
+        let store = tca::Store::new(
+            Feature {
+                library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
+                audio,
+            },
+            State {
+                session: Session::SignedIn(Box::default()),
+                queue: Some(QueueView { selected: 2 }),
+                player: crate::app::player::State {
+                    queue: vec![
+                        track("So What", "Miles Davis", 545),
+                        track("Freddie Freeloader", "Miles Davis", 586),
+                        track("Blue in Green", "Miles Davis", 337),
+                        track("All Blues", "Miles Davis", 693),
+                        track(
+                            "A Love Supreme, Pt. I: Acknowledgement",
+                            "John Coltrane",
+                            472,
+                        ),
+                    ],
+                    current: Some(1),
+                    is_playing: true,
+                    ..crate::app::player::State::new()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut spectrum = Spectrum::new();
+        let mut terminal = Terminal::new(TestBackend::new(76, 20)).expect("test backend");
+        terminal
+            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect();
+            println!("{row}");
+        }
+    }
 
     /// The whole signed-in screen, for eyeballing layout changes.
     ///

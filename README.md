@@ -21,6 +21,8 @@ is ported from it.
   metadata on the right. The panel is where the album's name lives; the border
   does not repeat it. Artwork is drawn as colour half-blocks, so it needs no
   terminal graphics protocol.
+- **The play queue** opens over any tab with `Ctrl-Q`, on whatever is playing.
+  Tracks can be played out of order or dropped from it.
 - **Playback** with play/pause, next/previous, and volume. Unplugging an output
   moves playback to another device and resumes where it left off; `Ctrl-O`
   picks one. The sounding track
@@ -52,12 +54,17 @@ is ported from it.
 | `space` | play / pause |
 | `n` / `p` | next / previous track |
 | `+` / `-` | volume |
+| `Ctrl-Q` | open the play queue |
 | `?` | show all keys |
 | `Ctrl-O` | output device picker |
 | `q` / `Ctrl-C` | quit |
 
+In the queue: `↑↓`/`jk` move, `↵` plays that track, `d` (or Delete) drops it,
+`Esc` closes. Dropping the sounding track moves playback to whatever followed
+it, or stops if nothing did.
+
 Single-key shortcuts (`space`, `n`, `p`, `q`, `+`, `-`) are commands only when
-focus is in the list. `Tab`, `Ctrl-O` and `Ctrl-C` always work. In the search field they are text — `q` is a query, not
+focus is in the list. `Tab`, `Ctrl-O`, `Ctrl-Q` and `Ctrl-C` always work. In the search field they are text — `q` is a query, not
 quit. `Tab` and `Ctrl-C` always work.
 
 ## Design notes

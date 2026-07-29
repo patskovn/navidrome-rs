@@ -78,10 +78,17 @@ pub struct DevicePicker {
     pub selected: usize,
 }
 
+/// The play queue, open over whatever tab is showing.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QueueView {
+    pub selected: usize,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct State {
     pub help: bool,
     pub picker: Option<DevicePicker>,
+    pub queue: Option<QueueView>,
     pub session: Session,
     pub player: player::State,
     pub status: Option<String>,
@@ -98,6 +105,7 @@ impl Default for State {
         Self {
             help: false,
             picker: None,
+            queue: None,
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
             status: None,
@@ -173,6 +181,8 @@ pub enum Action {
     Tick,
     /// Open or close the output picker.
     TogglePicker,
+    /// Open or close the play queue.
+    ToggleQueue,
     /// Open or close the keybinding help.
     ToggleHelp,
     Quit,
@@ -318,6 +328,18 @@ impl Reducer for Feature {
                     Effect::none()
                 }
 
+                Action::ToggleQueue => {
+                    state.queue = match state.queue {
+                        Some(_) => None,
+                        // Opens on whatever is playing, which is where you are
+                        // most likely to want to act.
+                        None => Some(QueueView {
+                            selected: state.player.current.unwrap_or(0),
+                        }),
+                    };
+                    Effect::none()
+                }
+
                 Action::Quit => Effect::quit(),
 
                 Action::Auth(_) | Action::Albums(_) | Action::Songs(_) | Action::Player(_) => {
@@ -356,6 +378,51 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     if state.help {
         state.help = false;
         return Effect::none();
+    }
+
+    // The queue owns the keyboard while it is open.
+    if let Some(queue) = &mut state.queue {
+        let len = state.player.queue.len();
+        return match key.code {
+            KeyCode::Esc => {
+                state.queue = None;
+                Effect::none()
+            }
+            KeyCode::Char('q') if key.modifiers == KeyModifiers::CONTROL => {
+                state.queue = None;
+                Effect::none()
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                queue.selected = (queue.selected + 1).min(len.saturating_sub(1));
+                Effect::none()
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                queue.selected = queue.selected.saturating_sub(1);
+                Effect::none()
+            }
+            KeyCode::Enter => {
+                let index = queue.selected;
+                state.queue = None;
+                Effect::send(Action::Player(player::Action::JumpTo(index)))
+            }
+            KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                let index = queue.selected;
+                if index >= len {
+                    return Effect::none();
+                }
+                // Keep the selection on a real row. The player reducer owns the
+                // removal itself; only the cursor is this feature's business.
+                let remaining = len - 1;
+                if remaining == 0 {
+                    // An empty queue is nothing to manage.
+                    state.queue = None;
+                } else {
+                    queue.selected = index.min(remaining - 1);
+                }
+                Effect::send(Action::Player(player::Action::Remove(index)))
+            }
+            _ => Effect::none(),
+        };
     }
 
     // The picker owns the keyboard while it is open.
@@ -407,6 +474,11 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     // every printable key, so a plain letter would only ever be typed.
     if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
         return Effect::send(Action::TogglePicker);
+    }
+    // Ctrl-Q, not a bare `q`: that is quit with the list focused and a search
+    // term otherwise. Raw mode clears IXON, so the terminal does not eat it.
+    if key.code == KeyCode::Char('q') && key.modifiers == KeyModifiers::CONTROL {
+        return Effect::send(Action::ToggleQueue);
     }
     // `?` is reserved even though the search field takes every other printable
     // key. Searching for a literal question mark is vanishingly rare, and `?`
@@ -578,6 +650,107 @@ mod test {
 
         store.send(Action::Event(key(KeyCode::Esc)), |s| s.picker = None);
         assert!(store.state().picker.is_none(), "Esc should close it");
+    }
+
+    fn queued_store(n: usize, current: usize) -> TestStore<Feature> {
+        let queue: Vec<crate::subsonic::Track> = (0..n)
+            .map(|i| crate::subsonic::Track {
+                id: i.to_string(),
+                title: format!("Track {i}"),
+                ..Default::default()
+            })
+            .collect();
+        TestStore::new(
+            feature(),
+            State {
+                session: Session::SignedIn(Box::default()),
+                player: player::State {
+                    queue,
+                    current: Some(current),
+                    ..player::State::new()
+                },
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Like the picker, a bare `q` cannot reach it: that is quit with the list
+    /// focused and a search term otherwise.
+    #[tokio::test]
+    async fn the_queue_opens_on_the_sounding_track() {
+        let mut store = queued_store(4, 1);
+        assert!(store.state().search_focused(), "search starts focused");
+
+        store.send(Action::Event(ctrl(KeyCode::Char('q'))), |_| {});
+        store.settle();
+
+        assert_eq!(
+            store.state().queue.as_ref().map(|q| q.selected),
+            Some(1),
+            "should open on whatever is playing"
+        );
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "and must not be typed into the query"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_queue_owns_the_keyboard_while_open() {
+        let mut store = queued_store(4, 1);
+        store.send(Action::Event(ctrl(KeyCode::Char('q'))), |_| {});
+        store.settle();
+
+        // Down moves, then stops at the end rather than wrapping or overrunning.
+        for expected in [2, 3, 3, 3] {
+            store.send(Action::Event(key(KeyCode::Down)), |s| {
+                s.queue.as_mut().expect("open").selected = expected;
+            });
+            store.settle();
+        }
+
+        store.send(Action::Event(key(KeyCode::Esc)), |s| s.queue = None);
+        assert!(store.state().queue.is_none(), "Esc should close it");
+    }
+
+    /// The cursor has to stay on a real row after the queue shortens under it.
+    #[tokio::test]
+    async fn removing_the_last_row_pulls_the_cursor_back() {
+        let mut store = queued_store(3, 1);
+        store.send(Action::Event(ctrl(KeyCode::Char('q'))), |_| {});
+        store.settle();
+        store.send(Action::Event(key(KeyCode::Down)), |s| {
+            s.queue.as_mut().expect("open").selected = 2;
+        });
+        store.settle();
+
+        store.send(Action::Event(key(KeyCode::Char('d'))), |s| {
+            s.queue.as_mut().expect("open").selected = 1;
+        });
+        store.settle();
+
+        assert_eq!(store.state().player.queue.len(), 2, "the row is gone");
+        assert_eq!(
+            store.state().queue.as_ref().unwrap().selected,
+            1,
+            "cursor must not point past the end"
+        );
+    }
+
+    /// An empty queue is nothing to manage, so the view closes with it.
+    #[tokio::test]
+    async fn emptying_the_queue_closes_the_view() {
+        let mut store = queued_store(1, 0);
+        store.send(Action::Event(ctrl(KeyCode::Char('q'))), |_| {});
+        store.settle();
+
+        store.send(Action::Event(key(KeyCode::Char('d'))), |s| s.queue = None);
+        store.settle();
+
+        assert!(store.state().player.queue.is_empty());
+        assert!(store.state().queue.is_none(), "nothing left to show");
+        assert_eq!(store.state().player.current, None, "playback should stop");
     }
 
     #[tokio::test]

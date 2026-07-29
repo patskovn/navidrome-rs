@@ -48,6 +48,41 @@ impl State {
         self.current.and_then(|i| self.queue.get(i))
     }
 
+    /// Drops queue entry `index`, keeping `current` pointing at the same track
+    /// where it can.
+    ///
+    /// Returns what that did to playback, or `None` if there was no such entry.
+    fn remove(&mut self, index: usize) -> Option<Removal> {
+        if index >= self.queue.len() {
+            return None;
+        }
+        self.queue.remove(index);
+
+        let Some(current) = self.current else {
+            // Nothing playing, so nothing to disturb.
+            return Some(Removal::Undisturbed);
+        };
+
+        match index.cmp(&current) {
+            // Everything after the hole shifts down, the playing track with it.
+            std::cmp::Ordering::Less => {
+                self.current = Some(current - 1);
+                Some(Removal::Undisturbed)
+            }
+            std::cmp::Ordering::Greater => Some(Removal::Undisturbed),
+            // The sounding track itself went. `current` now indexes whatever
+            // followed it, which is the natural thing to play next.
+            std::cmp::Ordering::Equal => {
+                if current < self.queue.len() {
+                    Some(Removal::StartNext)
+                } else {
+                    self.current = None;
+                    Some(Removal::Stop)
+                }
+            }
+        }
+    }
+
     /// Fraction of the current track elapsed, for the progress bar.
     pub fn progress(&self) -> f64 {
         match self.current_track().and_then(|t| t.duration) {
@@ -55,6 +90,17 @@ impl State {
             _ => 0.0,
         }
     }
+}
+
+/// What dropping a queue entry did to playback.
+#[derive(Debug, PartialEq, Eq)]
+enum Removal {
+    /// Playback carries on; the index was adjusted if it needed to be.
+    Undisturbed,
+    /// The sounding track went and another has taken its place in the order.
+    StartNext,
+    /// The sounding track went and nothing follows it.
+    Stop,
 }
 
 #[derive(Debug)]
@@ -67,6 +113,10 @@ pub enum Action {
     TogglePause,
     Next,
     Previous,
+    /// Drop one entry from the queue.
+    Remove(usize),
+    /// Play the queue entry at this index.
+    JumpTo(usize),
     VolumeUp,
     VolumeDown,
     /// Reported by the audio thread.
@@ -163,6 +213,30 @@ impl Reducer for Feature {
                     return self.start_current(state);
                 }
                 state.current = Some(current - 1);
+                state.elapsed = Duration::ZERO;
+                self.start_current(state)
+            }
+
+            Action::Remove(index) => match state.remove(index) {
+                None | Some(Removal::Undisturbed) => Effect::none(),
+                Some(Removal::StartNext) => {
+                    state.elapsed = Duration::ZERO;
+                    self.start_current(state)
+                }
+                Some(Removal::Stop) => {
+                    self.audio.send(Command::Stop);
+                    state.is_playing = false;
+                    state.elapsed = Duration::ZERO;
+                    state.buffered = None;
+                    Effect::send(Action::Delegated(Delegated::PlaybackActive(false)))
+                }
+            },
+
+            Action::JumpTo(index) => {
+                if index >= state.queue.len() {
+                    return Effect::none();
+                }
+                state.current = Some(index);
                 state.elapsed = Duration::ZERO;
                 self.start_current(state)
             }
@@ -278,6 +352,116 @@ mod test {
 
     fn store() -> TestStore<Feature> {
         TestStore::new(feature(), State::new())
+    }
+
+    /// A queue of `n` tracks with `current` playing.
+    fn queued(n: usize, current: usize) -> State {
+        State {
+            queue: (0..n).map(|i| track(&i.to_string())).collect(),
+            current: Some(current),
+            is_playing: true,
+            ..State::new()
+        }
+    }
+
+    /// Removing ahead of the playhead must not shift what is playing.
+    #[test]
+    fn removing_after_the_current_track_leaves_it_alone() {
+        let mut state = queued(4, 1);
+        assert_eq!(state.remove(3), Some(Removal::Undisturbed));
+        assert_eq!(state.current, Some(1));
+        assert_eq!(state.current_track().unwrap().id, "1");
+    }
+
+    /// Removing behind it shifts every later index down, the playhead with it —
+    /// the bug this would otherwise have: playback jumping to a different song.
+    #[test]
+    fn removing_before_the_current_track_follows_it_down() {
+        let mut state = queued(4, 2);
+        assert_eq!(state.remove(0), Some(Removal::Undisturbed));
+        assert_eq!(state.current, Some(1), "index must chase the same track");
+        assert_eq!(state.current_track().unwrap().id, "2");
+    }
+
+    #[test]
+    fn removing_the_sounding_track_promotes_the_next_one() {
+        let mut state = queued(3, 1);
+        assert_eq!(state.remove(1), Some(Removal::StartNext));
+        assert_eq!(state.current, Some(1));
+        assert_eq!(
+            state.current_track().unwrap().id,
+            "2",
+            "the one that followed"
+        );
+    }
+
+    #[test]
+    fn removing_the_last_sounding_track_stops_playback() {
+        let mut state = queued(2, 1);
+        assert_eq!(state.remove(1), Some(Removal::Stop));
+        assert_eq!(state.current, None);
+    }
+
+    #[test]
+    fn removing_the_only_track_stops_playback() {
+        let mut state = queued(1, 0);
+        assert_eq!(state.remove(0), Some(Removal::Stop));
+        assert!(state.queue.is_empty());
+        assert_eq!(state.current, None);
+    }
+
+    #[test]
+    fn removing_a_row_that_is_not_there_does_nothing() {
+        let mut state = queued(2, 0);
+        assert_eq!(state.remove(9), None);
+        assert_eq!(state.queue.len(), 2, "queue untouched");
+        assert_eq!(state.current, Some(0));
+    }
+
+    /// With nothing playing there is no index to keep honest.
+    #[test]
+    fn removing_from_an_idle_queue_is_undisturbed() {
+        let mut state = State {
+            queue: vec![track("a"), track("b")],
+            ..State::new()
+        };
+        assert_eq!(state.remove(0), Some(Removal::Undisturbed));
+        assert_eq!(state.current, None);
+    }
+
+    #[tokio::test]
+    async fn removing_the_sounding_track_restarts_the_clock() {
+        let mut store = TestStore::new(
+            feature(),
+            State {
+                elapsed: Duration::from_secs(30),
+                ..queued(3, 0)
+            },
+        );
+
+        store.send(Action::Remove(0), |s| {
+            s.queue.remove(0);
+            s.elapsed = Duration::ZERO;
+        });
+        store.settle();
+
+        assert_eq!(store.state().current, Some(0));
+        assert_eq!(store.state().current_track().unwrap().id, "1");
+    }
+
+    #[tokio::test]
+    async fn jumping_plays_the_chosen_entry() {
+        let mut store = TestStore::new(feature(), queued(3, 0));
+
+        store.send(Action::JumpTo(2), |s| s.current = Some(2));
+        store.settle();
+        assert_eq!(store.state().current_track().unwrap().id, "2");
+
+        // Out of range is a no-op rather than a panic: the queue can shrink
+        // under an in-flight action.
+        store.send(Action::JumpTo(9), |_| {});
+        store.settle();
+        assert_eq!(store.state().current, Some(2));
     }
 
     #[tokio::test]

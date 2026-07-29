@@ -16,6 +16,7 @@ use tca::case;
 
 use crate::app::DEBOUNCE;
 use crate::app::PaneFocus;
+use crate::app::truncate;
 use crate::subsonic::SharedLibrary;
 use crate::subsonic::Track;
 use crate::ui::list;
@@ -31,15 +32,6 @@ impl<'a> From<Row> for ListItem<'a> {
             row.0.duration_display()
         ))
     }
-}
-
-fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(width.saturating_sub(1)).collect();
-    out.push('…');
-    out
 }
 
 #[derive(Debug, Default, PartialEq, Clone)]
