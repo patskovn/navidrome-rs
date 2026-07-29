@@ -349,7 +349,8 @@ mod test {
     use super::*;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("navidrome-rs-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("navidrome-rs-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }
@@ -395,7 +396,10 @@ mod test {
         write_track(&cache, "new", 100);
 
         assert!(cache.total_bytes() <= 250, "cache exceeded its budget");
-        assert!(cache.lookup("new", Some("flac")).is_some(), "newest evicted");
+        assert!(
+            cache.lookup("new", Some("flac")).is_some(),
+            "newest evicted"
+        );
         assert!(
             cache.lookup("mid", Some("flac")).is_none(),
             "least recently used should have gone first"

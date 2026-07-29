@@ -62,7 +62,13 @@ impl Default for State<'_> {
 
 impl<'a> State<'a> {
     fn value(input: &single_line_input::State<'_>) -> String {
-        input.textarea.textarea.lines().first().cloned().unwrap_or_default()
+        input
+            .textarea
+            .textarea
+            .lines()
+            .first()
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn credentials(&self) -> (String, String, String) {
@@ -233,9 +239,7 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, store: tca::Store<State<'static>,
     let status = match (&state.error, state.checking) {
         (Some(error), _) => Line::from(error.as_str()).style(Style::new().fg(Theme::ERROR)),
         (None, true) => Line::from("Signing in…").style(Theme::dim()),
-        (None, false) => {
-            Line::from("[Tab] next field   [Enter] sign in").style(Theme::dim())
-        }
+        (None, false) => Line::from("[Tab] next field   [Enter] sign in").style(Theme::dim()),
     };
     let area = rows[3];
     ctx.frame().render_widget(Paragraph::new(status), area);

@@ -12,7 +12,6 @@ use ratatui::widgets::ListState;
 use ratatui::widgets::StatefulWidget;
 use tca::Effect;
 
-
 #[derive(Debug, Default, PartialEq, Clone)]
 pub struct State<T>
 where

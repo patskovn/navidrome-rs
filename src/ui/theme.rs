@@ -28,6 +28,4 @@ impl Theme {
     pub fn dim() -> Style {
         Style::new().fg(Self::DIM)
     }
-
-
 }

@@ -64,7 +64,6 @@ impl ServerConfig {
     pub fn password(&self) -> String {
         std::env::var(PASSWORD_ENV).unwrap_or_else(|_| self.password.clone())
     }
-
 }
 
 /// Tightens permissions to owner-only, since the file holds a password.

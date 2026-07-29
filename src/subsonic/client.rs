@@ -1,8 +1,8 @@
 use anyhow::Context;
 use async_trait::async_trait;
+use opensubsonic::AlbumListType;
 use opensubsonic::Auth;
 use opensubsonic::Client;
-use opensubsonic::AlbumListType;
 use opensubsonic::data::AlbumId3;
 use opensubsonic::data::Child;
 
@@ -115,7 +115,11 @@ impl Library for OpenSubsonicLibrary {
     /// this as an incrementally growing list, which matches how it is scrolled.
     async fn all_tracks(&self, offset: u32, limit: u32) -> anyhow::Result<Vec<Track>> {
         let albums = self
-            .albums(AlbumSort::Alphabetical, offset, limit.min(ALBUM_PAGE as u32))
+            .albums(
+                AlbumSort::Alphabetical,
+                offset,
+                limit.min(ALBUM_PAGE as u32),
+            )
             .await?;
 
         let mut tracks = Vec::new();
@@ -132,16 +136,7 @@ impl Library for OpenSubsonicLibrary {
     async fn search(&self, query: &str) -> anyhow::Result<SearchResults> {
         let result = self
             .client
-            .search3(
-                query,
-                Some(0),
-                None,
-                Some(50),
-                None,
-                Some(100),
-                None,
-                None,
-            )
+            .search3(query, Some(0), None, Some(50), None, Some(100), None, None)
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))
             .with_context(|| format!("searching for {query:?}"))?;
@@ -239,7 +234,13 @@ mod test {
             AlbumListType::from(AlbumSort::Alphabetical),
             AlbumListType::AlphabeticalByName
         );
-        assert_eq!(AlbumListType::from(AlbumSort::Recent), AlbumListType::Newest);
-        assert_eq!(AlbumListType::from(AlbumSort::Random), AlbumListType::Random);
+        assert_eq!(
+            AlbumListType::from(AlbumSort::Recent),
+            AlbumListType::Newest
+        );
+        assert_eq!(
+            AlbumListType::from(AlbumSort::Random),
+            AlbumListType::Random
+        );
     }
 }

@@ -28,10 +28,16 @@ const POSITION_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Instructions to the playback thread.
 #[derive(Debug)]
-#[allow(dead_code, reason = "Seek is wired through to rodio but not yet bound to a key")]
+#[allow(
+    dead_code,
+    reason = "Seek is wired through to rodio but not yet bound to a key"
+)]
 pub enum Command {
     /// Replace whatever is playing with this track.
-    Play { track: Track, url: String },
+    Play {
+        track: Track,
+        url: String,
+    },
     TogglePause,
     Stop,
     SetVolume(f32),
@@ -47,9 +53,13 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// Audio is flowing for this track.
-    Started { track_id: String },
+    Started {
+        track_id: String,
+    },
     /// Playback position advanced.
-    Position { elapsed: Duration },
+    Position {
+        elapsed: Duration,
+    },
     /// The current track ran to completion.
     Finished,
     Paused(bool),
@@ -61,7 +71,9 @@ pub enum Event {
         active: Option<String>,
     },
     /// The output vanished and playback was moved elsewhere.
-    DeviceLost { recovered: bool },
+    DeviceLost {
+        recovered: bool,
+    },
 }
 
 /// Handle used by the rest of the app. Cheap to clone.
@@ -197,13 +209,9 @@ async fn open_source(
 
     log::debug!("streaming {} from the server", track.id);
     let provider = cache.storage_provider(&track.id, track.suffix.as_deref());
-    let stream = StreamDownload::new_http(
-        url.parse()?,
-        provider,
-        Settings::default(),
-    )
-    .await
-    .map_err(|err| anyhow::anyhow!("{err}"))?;
+    let stream = StreamDownload::new_http(url.parse()?, provider, Settings::default())
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))?;
     Ok(Box::new(stream))
 }
 
@@ -322,13 +330,17 @@ fn run(
                             let _ = events.send(Event::Paused(false));
                         }
                         Err(err) => {
-                            let _ = events
-                                .send(Event::Failed(format!("cannot decode {}: {err}", track.title)));
+                            let _ = events.send(Event::Failed(format!(
+                                "cannot decode {}: {err}",
+                                track.title
+                            )));
                         }
                     },
                     Err(err) => {
-                        let _ = events
-                            .send(Event::Failed(format!("cannot play {}: {err:#}", track.title)));
+                        let _ = events.send(Event::Failed(format!(
+                            "cannot play {}: {err:#}",
+                            track.title
+                        )));
                     }
                 }
             }
@@ -372,8 +384,7 @@ fn run(
 
                         if was_playing
                             && let Some((track, url)) = current.clone()
-                            && let Ok(source) =
-                                runtime.block_on(open_source(&cache, &track, &url))
+                            && let Ok(source) = runtime.block_on(open_source(&cache, &track, &url))
                             && let Ok(decoded) = rodio::Decoder::new(source)
                         {
                             player.append(Tapped::new(decoded, tap.clone()));
@@ -388,8 +399,8 @@ fn run(
                         });
                     }
                     Err(err) => {
-                        let _ = events
-                            .send(Event::Failed(format!("cannot use that output: {err}")));
+                        let _ =
+                            events.send(Event::Failed(format!("cannot use that output: {err}")));
                     }
                 }
             }

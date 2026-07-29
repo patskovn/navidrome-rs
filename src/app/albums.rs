@@ -80,8 +80,14 @@ pub enum Action {
     /// The query text changed; schedule a debounced search.
     QueryChanged,
     /// Debounce elapsed. Ignored if the generation has moved on.
-    RunQuery { query: String, generation: u64 },
-    Loaded { items: Vec<Album>, generation: u64 },
+    RunQuery {
+        query: String,
+        generation: u64,
+    },
+    Loaded {
+        items: Vec<Album>,
+        generation: u64,
+    },
     Failed(String),
     /// An album was chosen; its tracks are being fetched.
     OpenAlbum(Box<Album>),
@@ -90,7 +96,10 @@ pub enum Action {
         tracks: Vec<Track>,
     },
     CloseDetail,
-    CoverLoaded { album_id: String, cover: Box<Cover> },
+    CoverLoaded {
+        album_id: String,
+        cover: Box<Cover>,
+    },
     List(list::Action),
     Event(Event),
     Delegated(Delegated),
@@ -100,7 +109,10 @@ pub enum Action {
 pub enum Delegated {
     Noop,
     /// Play `tracks[index]`, with the rest of the album queued behind it.
-    Play { tracks: Vec<Track>, index: usize },
+    Play {
+        tracks: Vec<Track>,
+        index: usize,
+    },
 }
 
 pub struct Feature {
@@ -120,19 +132,21 @@ impl Reducer for Feature {
             case!(Action::List),
             list::ListFeature::<Row>::default(),
         )
-        .on_delegate(case!(list::Action::Delegated), move |state: &mut State, d| {
-            match d {
+        .on_delegate(
+            case!(list::Action::Delegated),
+            move |state: &mut State, d| match d {
                 list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
-                list::Delegated::Enter(index) => { let _ = &for_enter; 
+                list::Delegated::Enter(index) => {
+                    let _ = &for_enter;
                     let Some(Row(album)) = state.items.items.get(index).cloned() else {
                         return Effect::none();
                     };
                     let _ = &for_enter;
                     Effect::send(Action::OpenAlbum(Box::new(album)))
-                 }
+                }
                 list::Delegated::Toogle => Effect::none(),
-            }
-        })
+            },
+        )
         .or_else(move |state: &mut State, action| match action {
             Action::Event(e) => reduce_event(state, e),
 
@@ -353,7 +367,11 @@ pub fn ui(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(" Search ")
-        .title_bottom(if focused { " ↓ to list " } else { " ↑ to search " })
+        .title_bottom(if focused {
+            " ↓ to list "
+        } else {
+            " ↑ to search "
+        })
         .border_style(Theme::border(focused));
     // A block cursor marks the caret without needing a real text widget.
     let text = if focused {
@@ -390,11 +408,7 @@ fn status_line(loading: bool, error: &Option<String>) -> Option<ratatui::text::L
 /// squeezing the track titles.
 const INFO_WIDTH: u16 = 34;
 
-fn draw_detail(
-    ctx: &mut crate::ui::DrawingContext,
-    detail: &Detail,
-    playing: Option<&str>,
-) {
+fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail, playing: Option<&str>) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
 
@@ -481,7 +495,12 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
             album.name.clone(),
             Style::new().fg(Theme::ACCENT).bold(),
         )),
-        Line::from(album.artist.clone().unwrap_or_else(|| "Unknown artist".into())),
+        Line::from(
+            album
+                .artist
+                .clone()
+                .unwrap_or_else(|| "Unknown artist".into()),
+        ),
         Line::from(""),
     ];
 
@@ -525,10 +544,8 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
     lines.push(Line::from("↵ play from here").style(Theme::dim()));
     lines.push(Line::from("Esc back").style(Theme::dim()));
 
-    ctx.frame().render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        rows[1],
-    );
+    ctx.frame()
+        .render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows[1]);
 }
 
 /// Draws the artwork, or a quiet note in its place.
@@ -611,7 +628,8 @@ mod test {
         }
         assert_eq!(store.state().query, "blue");
         assert_eq!(
-            store.state().generation, 4,
+            store.state().generation,
+            4,
             "each keystroke should invalidate the last"
         );
     }
@@ -635,11 +653,15 @@ mod test {
     #[tokio::test]
     async fn a_stale_debounce_timer_is_ignored() {
         let mut store = store();
-        store.send(Action::Event(key(KeyCode::Char('a'))), |s| s.query.push('a'));
+        store.send(Action::Event(key(KeyCode::Char('a'))), |s| {
+            s.query.push('a')
+        });
         store.settle();
         let stale = store.state().generation;
 
-        store.send(Action::Event(key(KeyCode::Char('b'))), |s| s.query.push('b'));
+        store.send(Action::Event(key(KeyCode::Char('b'))), |s| {
+            s.query.push('b')
+        });
         store.settle();
 
         // Replay the older timer; it should do nothing at all.
@@ -650,7 +672,10 @@ mod test {
             },
             |_| {},
         );
-        assert!(!store.state().loading, "a stale timer must not start a search");
+        assert!(
+            !store.state().loading,
+            "a stale timer must not start a search"
+        );
         assert_eq!(store.pending_len(), 0, "and must emit nothing");
     }
 
@@ -658,7 +683,9 @@ mod test {
     #[tokio::test]
     async fn a_stale_result_is_discarded() {
         let mut store = store();
-        store.send(Action::Event(key(KeyCode::Char('x'))), |s| s.query.push('x'));
+        store.send(Action::Event(key(KeyCode::Char('x'))), |s| {
+            s.query.push('x')
+        });
         store.settle();
 
         store.send(
@@ -784,10 +811,7 @@ mod test {
 
         let mut png = Vec::new();
         image::DynamicImage::ImageRgb8(image::RgbImage::new(2, 2))
-            .write_to(
-                &mut std::io::Cursor::new(&mut png),
-                image::ImageFormat::Png,
-            )
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
             .unwrap();
         let cover = Cover::decode(&png).unwrap();
 
@@ -840,7 +864,10 @@ mod test {
             },
             |_| {},
         );
-        assert!(store.state().detail.is_none(), "a late load must not reopen it");
+        assert!(
+            store.state().detail.is_none(),
+            "a late load must not reopen it"
+        );
     }
 
     #[tokio::test]

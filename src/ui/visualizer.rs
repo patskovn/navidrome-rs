@@ -287,11 +287,17 @@ mod test {
 
         // Top row of a full-height bar is the tip.
         let tip = buf.cell((0, area.y)).unwrap().style();
-        assert!(tip.add_modifier.contains(Modifier::BOLD), "tip should be bold");
+        assert!(
+            tip.add_modifier.contains(Modifier::BOLD),
+            "tip should be bold"
+        );
 
         // Bottom row is body, which recedes.
         let base = buf.cell((0, area.bottom() - 1)).unwrap().style();
-        assert!(base.add_modifier.contains(Modifier::DIM), "base should be dim");
+        assert!(
+            base.add_modifier.contains(Modifier::DIM),
+            "base should be dim"
+        );
     }
 
     #[test]
@@ -366,7 +372,14 @@ mod test {
         println!();
         for y in 0..area.height {
             let row: String = (0..area.width)
-                .map(|x| buf.cell((x, y)).unwrap().symbol().chars().next().unwrap_or(' '))
+                .map(|x| {
+                    buf.cell((x, y))
+                        .unwrap()
+                        .symbol()
+                        .chars()
+                        .next()
+                        .unwrap_or(' ')
+                })
                 .collect();
             println!("|{row}|");
         }
@@ -419,7 +432,10 @@ mod test {
         }
 
         let peak = spectrum.levels().iter().cloned().fold(0.0f32, f32::max);
-        assert!(peak > 0.1, "a pure tone should raise a bar, peak was {peak}");
+        assert!(
+            peak > 0.1,
+            "a pure tone should raise a bar, peak was {peak}"
+        );
     }
 
     #[test]

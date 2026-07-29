@@ -62,10 +62,16 @@ pub enum Action {
     /// The query text changed; schedule a debounced search.
     QueryChanged,
     /// Debounce elapsed. Ignored if the generation has moved on.
-    RunQuery { query: String, generation: u64 },
-    Loaded { items: Vec<Track>, generation: u64 },
+    RunQuery {
+        query: String,
+        generation: u64,
+    },
+    Loaded {
+        items: Vec<Track>,
+        generation: u64,
+    },
     Failed(String),
-    
+
     List(list::Action),
     Event(Event),
     Delegated(Delegated),
@@ -75,7 +81,10 @@ pub enum Action {
 pub enum Delegated {
     Noop,
     /// Play the visible list, starting at this index.
-    Play { tracks: Vec<Track>, index: usize },
+    Play {
+        tracks: Vec<Track>,
+        index: usize,
+    },
 }
 
 pub struct Feature {
@@ -95,19 +104,22 @@ impl Reducer for Feature {
             case!(Action::List),
             list::ListFeature::<Row>::default(),
         )
-        .on_delegate(case!(list::Action::Delegated), move |state: &mut State, d| {
-            match d {
+        .on_delegate(
+            case!(list::Action::Delegated),
+            move |state: &mut State, d| match d {
                 list::Delegated::Noop(_) => Effect::send(Action::Delegated(Delegated::Noop)),
-                list::Delegated::Enter(index) => { let _ = &for_enter; 
-                    let tracks: Vec<Track> = state.items.items.iter().map(|r| r.0.clone()).collect();
+                list::Delegated::Enter(index) => {
+                    let _ = &for_enter;
+                    let tracks: Vec<Track> =
+                        state.items.items.iter().map(|r| r.0.clone()).collect();
                     if tracks.is_empty() {
                         return Effect::none();
                     }
                     Effect::send(Action::Delegated(Delegated::Play { tracks, index }))
-                 }
+                }
                 list::Delegated::Toogle => Effect::none(),
-            }
-        })
+            },
+        )
         .or_else(move |state: &mut State, action| match action {
             Action::Event(e) => reduce_event(state, e),
 
@@ -166,7 +178,6 @@ impl Reducer for Feature {
                 Effect::none()
             }
 
-            
             Action::Delegated(_) => Effect::none(),
             Action::List(_) => unreachable!("claimed by the scope"),
         })
@@ -230,7 +241,11 @@ pub fn ui(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(" Search ")
-        .title_bottom(if focused { " ↓ to list " } else { " ↑ to search " })
+        .title_bottom(if focused {
+            " ↓ to list "
+        } else {
+            " ↑ to search "
+        })
         .border_style(Theme::border(focused));
     // A block cursor marks the caret without needing a real text widget.
     let text = if focused {

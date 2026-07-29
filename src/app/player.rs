@@ -45,9 +45,7 @@ impl State {
     /// Fraction of the current track elapsed, for the progress bar.
     pub fn progress(&self) -> f64 {
         match self.current_track().and_then(|t| t.duration) {
-            Some(total) if total > 0 => {
-                (self.elapsed.as_secs_f64() / total as f64).clamp(0.0, 1.0)
-            }
+            Some(total) if total > 0 => (self.elapsed.as_secs_f64() / total as f64).clamp(0.0, 1.0),
             _ => 0.0,
         }
     }
@@ -56,7 +54,10 @@ impl State {
 #[derive(Debug)]
 pub enum Action {
     /// Replace the queue and start at `index`.
-    SetQueue { tracks: Vec<Track>, index: usize },
+    SetQueue {
+        tracks: Vec<Track>,
+        index: usize,
+    },
     TogglePause,
     Next,
     Previous,
@@ -185,11 +186,7 @@ impl Reducer for Feature {
 }
 
 impl Feature {
-    fn reduce_engine_event(
-        &self,
-        state: &mut State,
-        event: crate::audio::Event,
-    ) -> Effect<Action> {
+    fn reduce_engine_event(&self, state: &mut State, event: crate::audio::Event) -> Effect<Action> {
         use crate::audio::Event;
         match event {
             Event::Started { .. } => {
@@ -256,7 +253,8 @@ mod test {
     /// Builds a feature whose audio engine is detached: commands go nowhere,
     /// which is exactly what a reducer test wants.
     fn feature() -> Feature {
-        let dir = std::env::temp_dir().join(format!("navidrome-player-test-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("navidrome-player-test-{}", std::process::id()));
         let cache = Arc::new(TrackCache::new(&dir, 1024).unwrap());
         let (audio, _events) = AudioEngine::start(cache);
         Feature {

@@ -114,7 +114,10 @@ mod test {
         img.put_pixel(1, 1, image::Rgb([255, 255, 255]));
         let mut bytes = Vec::new();
         image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
             .unwrap();
         bytes
     }
@@ -161,9 +164,21 @@ mod test {
         CoverWidget::new(&cover).render(area, &mut buf);
 
         // rows = 6, so cols = 12, centred: columns 14..26 are drawn.
-        assert_eq!(buf.cell((20, 3)).unwrap().symbol(), "▀", "centre should be drawn");
-        assert_eq!(buf.cell((1, 3)).unwrap().symbol(), " ", "left should be blank");
-        assert_eq!(buf.cell((38, 3)).unwrap().symbol(), " ", "right should be blank");
+        assert_eq!(
+            buf.cell((20, 3)).unwrap().symbol(),
+            "▀",
+            "centre should be drawn"
+        );
+        assert_eq!(
+            buf.cell((1, 3)).unwrap().symbol(),
+            " ",
+            "left should be blank"
+        );
+        assert_eq!(
+            buf.cell((38, 3)).unwrap().symbol(),
+            " ",
+            "right should be blank"
+        );
     }
 
     #[test]
@@ -190,7 +205,10 @@ mod preview {
         }
         let mut bytes = Vec::new();
         image::DynamicImage::ImageRgb8(img)
-            .write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
             .unwrap();
 
         let cover = Cover::decode(&bytes).unwrap();

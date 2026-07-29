@@ -202,12 +202,13 @@ impl Reducer for Feature {
         let switch = self.library.clone();
 
         Scope::optional(State::auth_mut, case!(Action::Auth), auth::Feature)
-            .on_delegate(case!(auth::Action::Delegated), |_state: &mut State, d| {
-                match d {
+            .on_delegate(
+                case!(auth::Action::Delegated),
+                |_state: &mut State, d| match d {
                     auth::Delegated::SignedIn(config) => Effect::send(Action::SignedIn(config)),
                     auth::Delegated::Noop => Effect::none(),
-                }
-            })
+                },
+            )
             .then(
                 Scope::optional(
                     |s: &mut State| s.library_mut().map(|l| &mut l.albums),
@@ -216,12 +217,15 @@ impl Reducer for Feature {
                         library: self.library.clone() as SharedLibrary,
                     },
                 )
-                .on_delegate(case!(albums::Action::Delegated), |_s: &mut State, d| match d {
-                    albums::Delegated::Play { tracks, index } => Effect::send(Action::Player(
-                        player::Action::SetQueue { tracks, index },
-                    )),
-                    albums::Delegated::Noop => Effect::none(),
-                }),
+                .on_delegate(
+                    case!(albums::Action::Delegated),
+                    |_s: &mut State, d| match d {
+                        albums::Delegated::Play { tracks, index } => {
+                            Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
+                        }
+                        albums::Delegated::Noop => Effect::none(),
+                    },
+                ),
             )
             .then(
                 Scope::optional(
@@ -231,12 +235,15 @@ impl Reducer for Feature {
                         library: self.library.clone() as SharedLibrary,
                     },
                 )
-                .on_delegate(case!(songs::Action::Delegated), |_s: &mut State, d| match d {
-                    songs::Delegated::Play { tracks, index } => {
-                        Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
-                    }
-                    songs::Delegated::Noop => Effect::none(),
-                }),
+                .on_delegate(
+                    case!(songs::Action::Delegated),
+                    |_s: &mut State, d| match d {
+                        songs::Delegated::Play { tracks, index } => {
+                            Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
+                        }
+                        songs::Delegated::Noop => Effect::none(),
+                    },
+                ),
             )
             .then(
                 Scope::new(
@@ -247,9 +254,12 @@ impl Reducer for Feature {
                         audio: self.audio.clone(),
                     },
                 )
-                .on_delegate(case!(player::Action::Delegated), |_s: &mut State, d| match d {
-                    player::Delegated::PlaybackActive(active) => Self::tick_effect(active),
-                }),
+                .on_delegate(
+                    case!(player::Action::Delegated),
+                    |_s: &mut State, d| match d {
+                        player::Delegated::PlaybackActive(active) => Self::tick_effect(active),
+                    },
+                ),
             )
             .or_else(move |state: &mut State, action| match action {
                 Action::Event(e) => reduce_event(state, e),
@@ -303,10 +313,9 @@ impl Reducer for Feature {
 
                 Action::Quit => Effect::quit(),
 
-                Action::Auth(_)
-                | Action::Albums(_)
-                | Action::Songs(_)
-                | Action::Player(_) => unreachable!("claimed by a scope"),
+                Action::Auth(_) | Action::Albums(_) | Action::Songs(_) | Action::Player(_) => {
+                    unreachable!("claimed by a scope")
+                }
             })
             .reduce(state, action)
     }
@@ -422,10 +431,18 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
 /// Loads a tab's contents the first time it is opened.
 fn load_if_empty(state: &mut State) -> Effect<Action> {
     match state.library().map(|l| l.tab) {
-        Some(Tab::Albums) if state.library().is_some_and(|l| l.albums.items.items.is_empty()) => {
+        Some(Tab::Albums)
+            if state
+                .library()
+                .is_some_and(|l| l.albums.items.items.is_empty()) =>
+        {
             Effect::send(Action::Albums(albums::Action::Reload))
         }
-        Some(Tab::AllMusic) if state.library().is_some_and(|l| l.songs.items.items.is_empty()) => {
+        Some(Tab::AllMusic)
+            if state
+                .library()
+                .is_some_and(|l| l.songs.items.items.is_empty()) =>
+        {
             Effect::send(Action::Songs(songs::Action::Reload))
         }
         _ => Effect::none(),
@@ -500,7 +517,10 @@ mod test {
     #[tokio::test]
     async fn letters_type_into_search_instead_of_triggering_shortcuts() {
         let mut store = signed_in_store();
-        assert!(store.state().search_focused(), "search should start focused");
+        assert!(
+            store.state().search_focused(),
+            "search should start focused"
+        );
 
         for c in ['q', 'n', 'p', ' '] {
             store.send(Action::Event(key(KeyCode::Char(c))), |_| {});
@@ -508,7 +528,10 @@ mod test {
         }
 
         assert_eq!(store.state().library().unwrap().albums.query, "qnp ");
-        assert!(!store.state().player.is_playing, "space must not have played");
+        assert!(
+            !store.state().player.is_playing,
+            "space must not have played"
+        );
     }
 
     fn ctrl(code: KeyCode) -> Event {
@@ -529,7 +552,10 @@ mod test {
 
         store.send(Action::Event(ctrl(KeyCode::Char('o'))), |_| {});
         store.settle();
-        assert!(store.state().picker.is_some(), "Ctrl-O should open the picker");
+        assert!(
+            store.state().picker.is_some(),
+            "Ctrl-O should open the picker"
+        );
         assert_eq!(
             store.state().library().unwrap().albums.query,
             "",
@@ -589,11 +615,17 @@ mod test {
 
         store.send(Action::Event(key(KeyCode::Down)), |_| {});
         store.settle();
-        assert!(!store.state().search_focused(), "Down should enter the list");
+        assert!(
+            !store.state().search_focused(),
+            "Down should enter the list"
+        );
 
         store.send(Action::Event(key(KeyCode::Up)), |_| {});
         store.settle();
-        assert!(store.state().search_focused(), "Up should return to the field");
+        assert!(
+            store.state().search_focused(),
+            "Up should return to the field"
+        );
     }
 
     /// With focus in the list, the shortcuts are commands again.
@@ -692,11 +724,7 @@ mod test {
         async fn album_tracks(&self, _: &str) -> anyhow::Result<Vec<crate::subsonic::Track>> {
             anyhow::bail!("not signed in")
         }
-        async fn all_tracks(
-            &self,
-            _: u32,
-            _: u32,
-        ) -> anyhow::Result<Vec<crate::subsonic::Track>> {
+        async fn all_tracks(&self, _: u32, _: u32) -> anyhow::Result<Vec<crate::subsonic::Track>> {
             anyhow::bail!("not signed in")
         }
         async fn search(&self, _: &str) -> anyhow::Result<crate::subsonic::SearchResults> {
