@@ -9,7 +9,7 @@ use ratatui::text::Span;
 use ratatui::widgets::Block;
 use ratatui::widgets::BorderType;
 use ratatui::widgets::Borders;
-use ratatui::widgets::Gauge;
+use ratatui::widgets::LineGauge;
 use ratatui::widgets::Paragraph;
 use tca::Store;
 
@@ -109,7 +109,8 @@ fn draw_tabs(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     ));
 
     let area = ctx.area();
-    ctx.frame().render_widget(Paragraph::new(Line::from(spans)), area);
+    ctx.frame()
+        .render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
@@ -213,12 +214,7 @@ fn draw_player(
         .current_track()
         .map(|t| t.duration_display())
         .unwrap_or_else(|| "--:--".into());
-    let gauge = Gauge::default()
-        .ratio(player.progress())
-        .label(format!("{elapsed} / {total}"))
-        .gauge_style(Style::new().fg(Theme::ACCENT))
-        .use_unicode(true);
-    ctx.frame().render_widget(gauge, rows[1]);
+    draw_scrubber(ctx.frame(), rows[1], &elapsed, &total, player.progress());
 
     let footer = match &player.error {
         Some(error) => Line::from(error.as_str()).style(Style::new().fg(Theme::ERROR)),
@@ -230,6 +226,46 @@ fn draw_player(
         .style(Theme::dim()),
     };
     ctx.frame().render_widget(Paragraph::new(footer), rows[2]);
+}
+
+/// One row: elapsed, a bar, and the track length.
+///
+/// The times sit either side of the bar rather than on top of it. A `Gauge`
+/// centres its label over the filled/unfilled boundary, so the reading inverts
+/// mid-word — and it does so exactly while the number is changing, which is
+/// when it most wants reading.
+fn draw_scrubber(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    elapsed: &str,
+    total: &str,
+    ratio: f64,
+) {
+    // The elapsed column is sized exactly: `LineGauge` always reserves one cell
+    // after its label — even an empty one — which supplies the gap on that side.
+    let columns = Layout::horizontal([
+        Constraint::Length(elapsed.chars().count() as u16),
+        Constraint::Fill(1),
+        Constraint::Length(total.chars().count() as u16 + 1),
+    ])
+    .split(area);
+
+    frame.render_widget(Paragraph::new(elapsed), columns[0]);
+
+    let gauge = LineGauge::default()
+        .ratio(ratio.clamp(0.0, 1.0))
+        // Suppressed: an unset label falls back to a percentage readout.
+        .label("")
+        .filled_symbol("━")
+        .unfilled_symbol("─")
+        .filled_style(Style::new().fg(Theme::ACCENT))
+        .unfilled_style(Theme::dim());
+    frame.render_widget(gauge, columns[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(total).right_aligned()).style(Theme::dim()),
+        columns[2],
+    );
 }
 
 /// The output picker: system default plus every device the host offers.
@@ -353,4 +389,64 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
     );
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+
+    /// Renders one scrubber row and returns it as text.
+    fn row(width: u16, elapsed: &str, total: &str, ratio: f64) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("test backend");
+        terminal
+            .draw(|frame| draw_scrubber(frame, frame.area(), elapsed, total, ratio))
+            .expect("draw");
+        terminal.backend().buffer().content()[..width as usize]
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn times_sit_outside_the_bar() {
+        let line = row(30, "1:23", "4:56", 0.5);
+
+        assert!(line.starts_with("1:23 "), "elapsed leads the row: {line:?}");
+        assert!(line.ends_with(" 4:56"), "total trails the row: {line:?}");
+
+        // The regression this replaced: the gauge painted its label over the
+        // bar, so a time could only be read against a half-inverted background.
+        let bar = &line[5..line.len() - 5];
+        assert!(
+            bar.chars().all(|c| c == '━' || c == '─'),
+            "the bar must carry nothing but bar: {bar:?}"
+        );
+    }
+
+    #[test]
+    fn the_bar_fills_in_proportion() {
+        let filled = |ratio| row(30, "0:00", "4:56", ratio).matches('━').count();
+
+        assert_eq!(filled(0.0), 0);
+        assert_eq!(filled(1.0), 20, "the full width between the two times");
+        assert_eq!(filled(0.5), 10);
+    }
+
+    /// `cargo test -- --ignored --nocapture preview_scrubber`
+    #[test]
+    #[ignore = "visual check only"]
+    fn preview_scrubber() {
+        for ratio in [0.0, 0.35, 1.0] {
+            println!("{}", row(46, "1:23", "4:56", ratio));
+        }
+    }
+
+    #[test]
+    fn an_unknown_length_still_renders() {
+        let line = row(30, "0:00", "--:--", 0.0);
+        assert!(line.ends_with(" --:--"), "{line:?}");
+    }
 }
