@@ -22,6 +22,12 @@ pub struct Theme;
 
 impl Theme {
     pub const ACCENT: Color = Color::Magenta;
+    /// The accent with the colour taken out of it, for an unfocused window.
+    ///
+    /// `Gray`, not the darker `DIM`: the accent also backs the selected row via
+    /// `selection()`, which reverses it, and a dark grey background would leave
+    /// the row's text nearly unreadable on a dark terminal.
+    pub const ACCENT_UNFOCUSED: Color = Color::Gray;
     pub const FOCUSED_BORDER: Color = Color::Green;
     pub const DIM: Color = Color::DarkGray;
     pub const ERROR: Color = Color::Red;
@@ -36,18 +42,13 @@ impl Theme {
         FOCUSED.load(Ordering::Relaxed)
     }
 
-    /// The accent, faint while another window has the terminal.
-    ///
-    /// Faintness is the SGR attribute rather than a second, darker colour: the
-    /// 16-colour palette holds no shade below `Magenta`, and hard-coding an RGB
-    /// value would override whatever palette the user actually chose.
+    /// The accent, grey while another window has the terminal.
     pub fn accent() -> Style {
-        let style = Style::new().fg(Self::ACCENT);
-        if Self::is_focused() {
-            style
+        Style::new().fg(if Self::is_focused() {
+            Self::ACCENT
         } else {
-            style.dim()
-        }
+            Self::ACCENT_UNFOCUSED
+        })
     }
 
     /// Border style for a pane, green when it holds focus.

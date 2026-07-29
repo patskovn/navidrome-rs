@@ -427,24 +427,22 @@ mod tests {
     /// The only test that touches the focus flag — it is process-global, so a
     /// second one would race this under the default parallel runner.
     #[test]
-    fn losing_window_focus_makes_the_bar_faint() {
-        use ratatui::style::Modifier;
-
+    fn losing_window_focus_greys_the_bar() {
         // The played part of the bar is the accent; cell 5 is its first.
         let played = |focused| {
             Theme::set_focused(focused);
             buffer(30, 1.0)[(5, 0)].style()
         };
 
-        let bright = played(true);
-        let faint = played(false);
+        let focused = played(true);
+        let unfocused = played(false);
         Theme::set_focused(true);
 
-        assert_eq!(bright.fg, faint.fg, "the hue is unchanged");
-        assert!(!bright.add_modifier.contains(Modifier::DIM));
-        assert!(
-            faint.add_modifier.contains(Modifier::DIM),
-            "an unfocused window should draw the accent faint"
+        assert_eq!(focused.fg, Some(Theme::ACCENT));
+        assert_eq!(
+            unfocused.fg,
+            Some(Theme::ACCENT_UNFOCUSED),
+            "an unfocused window should draw the accent grey"
         );
     }
 

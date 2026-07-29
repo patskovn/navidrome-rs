@@ -166,8 +166,10 @@ Reducers are testable because the server sits behind the `Library` trait; use
   accent is used from a dozen draw sites and threading a flag to all of them
   would buy nothing. It defaults to *focused*, so a terminal that never reports
   (Terminal.app, tmux without `focus-events on`) looks normal rather than
-  permanently faint. Only one test may touch that flag; a second would race it
-  under the parallel runner.
+  permanently grey. Only one test may touch that flag; a second would race it
+  under the parallel runner. Note `ACCENT_UNFOCUSED` is `Gray` rather than the
+  darker `DIM`: the accent also backs the selected row through `selection()`,
+  which reverses it into a background.
 - **Partial downloads.** A track streams into `<id>.<ext>.part` and is promoted
   to its final name only once the full content length has landed, so an
   interrupted download is never mistaken for a complete file. Stale `.part`
