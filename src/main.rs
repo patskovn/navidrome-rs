@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use crossterm::event::DisableBracketedPaste;
+use crossterm::event::DisableFocusChange;
 use crossterm::event::EnableBracketedPaste;
+use crossterm::event::EnableFocusChange;
 use crossterm::event::Event;
 use futures::FutureExt;
 use futures::StreamExt;
@@ -61,10 +63,17 @@ fn configure_logger() -> anyhow::Result<()> {
 ///
 /// Exhaustive on purpose: adding mouse support should fail to compile here
 /// rather than silently drop events.
+///
+/// Focus changes are actionable — they dim the accent — and cost one redraw
+/// each, which is once per window switch rather than once per pixel.
 fn is_actionable(event: &Event) -> bool {
     match event {
-        Event::Key(_) | Event::Paste(_) | Event::Resize(..) => true,
-        Event::Mouse(_) | Event::FocusGained | Event::FocusLost => false,
+        Event::Key(_)
+        | Event::Paste(_)
+        | Event::Resize(..)
+        | Event::FocusGained
+        | Event::FocusLost => true,
+        Event::Mouse(_) => false,
     }
 }
 
@@ -211,7 +220,16 @@ async fn main() -> anyhow::Result<()> {
     let mut stderr = io::stderr();
     // Mouse capture is deliberately not enabled: nothing here reduces mouse
     // events, and enabling it would break the terminal's own text selection.
-    execute!(stderr, EnterAlternateScreen, EnableBracketedPaste)?;
+    //
+    // Focus tracking is, so the accent can go faint when the window is not the
+    // one you are looking at. Terminals that do not implement it ignore the
+    // sequence and simply never report — which the default handles.
+    execute!(
+        stderr,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
     let backend = CrosstermBackend::new(stderr);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -222,7 +240,8 @@ async fn main() -> anyhow::Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableBracketedPaste
+        DisableBracketedPaste,
+        DisableFocusChange
     )?;
     terminal.show_cursor()?;
 

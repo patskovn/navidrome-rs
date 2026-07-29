@@ -160,6 +160,14 @@ Reducers are testable because the server sits behind the `Library` trait; use
   `Player`, so it has to be reapplied or the track resumes at full volume.
   Resuming also means re-opening the track and seeking, since the new player
   starts empty.
+- **Window focus is a global, on purpose.** `Theme::accent()` reads a process
+  `AtomicBool` rather than a parameter. `entry::State::focused` is still the
+  source of truth — `ui::draw` copies it into the theme once per frame — but the
+  accent is used from a dozen draw sites and threading a flag to all of them
+  would buy nothing. It defaults to *focused*, so a terminal that never reports
+  (Terminal.app, tmux without `focus-events on`) looks normal rather than
+  permanently faint. Only one test may touch that flag; a second would race it
+  under the parallel runner.
 - **Partial downloads.** A track streams into `<id>.<ext>.part` and is promoted
   to its final name only once the full content length has landed, so an
   interrupted download is never mistaken for a complete file. Stale `.part`

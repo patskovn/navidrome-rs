@@ -456,7 +456,7 @@ fn draw_tracks(
         .collect();
 
     let list = List::new(items)
-        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
+        .highlight_style(Theme::accent().reversed())
         .highlight_symbol("▶ ");
     let mut list_state = ListState::default();
     if !detail.tracks.is_empty() {
@@ -468,7 +468,6 @@ fn draw_tracks(
 fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui::layout::Rect) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
-    use ratatui::style::Style;
     use ratatui::text::Line;
     use ratatui::text::Span;
     use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
@@ -491,10 +490,7 @@ fn draw_info(ctx: &mut crate::ui::DrawingContext, detail: &Detail, area: ratatui
 
     let album = &detail.album;
     let mut lines = vec![
-        Line::from(Span::styled(
-            album.name.clone(),
-            Style::new().fg(Theme::ACCENT).bold(),
-        )),
+        Line::from(Span::styled(album.name.clone(), Theme::accent().bold())),
         Line::from(
             album
                 .artist

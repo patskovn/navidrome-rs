@@ -33,6 +33,9 @@ pub fn draw(
     tap: &SampleTap,
     spectrum: &mut Spectrum,
 ) {
+    // Published before anything draws, including the sign-in screen below.
+    Theme::set_focused(store.state().focused);
+
     let queue = ModalQueue::new(frame.area());
     let mut ctx = DrawingContext::new(frame, &queue);
 
@@ -76,7 +79,7 @@ fn draw_sign_in(ctx: &mut DrawingContext, store: &Store<State, Action>) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title(" Sign in to Navidrome ")
-        .border_style(Style::new().fg(Theme::ACCENT));
+        .border_style(Theme::accent());
     let inner = block.inner(centered);
     ctx.frame().render_widget(block, centered);
 
@@ -96,7 +99,7 @@ fn draw_tabs(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let mut spans = Vec::new();
     for (index, tab) in Tab::ALL.iter().enumerate() {
         let style = if *tab == active {
-            Style::new().fg(Theme::ACCENT).bold()
+            Theme::accent().bold()
         } else {
             Theme::dim()
         };
@@ -258,7 +261,7 @@ fn draw_scrubber(
         .label("")
         .filled_symbol("━")
         .unfilled_symbol("─")
-        .filled_style(Style::new().fg(Theme::ACCENT))
+        .filled_style(Theme::accent())
         .unfilled_style(Theme::dim());
     frame.render_widget(gauge, columns[1]);
 
@@ -296,7 +299,7 @@ fn draw_picker(
         .border_type(BorderType::Rounded)
         .title(" Output ")
         .title_bottom(" ↵ select · Esc close ")
-        .border_style(Style::new().fg(Theme::ACCENT));
+        .border_style(Theme::accent());
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
 
@@ -315,7 +318,7 @@ fn draw_picker(
     }));
 
     let list = List::new(items)
-        .highlight_style(Style::new().fg(Theme::ACCENT).reversed())
+        .highlight_style(Theme::accent().reversed())
         .highlight_symbol("▶ ");
     let mut state = ListState::default();
     state.select(Some(picker.selected));
@@ -363,7 +366,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         .border_type(BorderType::Rounded)
         .title(" Keys ")
         .title_bottom(" any key to close ")
-        .border_style(Style::new().fg(Theme::ACCENT));
+        .border_style(Theme::accent());
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
 
@@ -374,7 +377,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
                 return Line::from("");
             }
             Line::from(vec![
-                Span::styled(format!(" {keys:<8}"), Style::new().fg(Theme::ACCENT)),
+                Span::styled(format!(" {keys:<8}"), Theme::accent()),
                 Span::raw(*what),
             ])
         })
@@ -408,6 +411,41 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    /// The same row as a buffer, for asserting on style rather than symbols.
+    fn buffer(width: u16, ratio: f64) -> ratatui::buffer::Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).expect("test backend");
+        terminal
+            .draw(|frame| draw_scrubber(frame, frame.area(), "1:23", "4:56", ratio))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// End to end: losing window focus reaches the accent a widget draws with.
+    ///
+    /// The only test that touches the focus flag — it is process-global, so a
+    /// second one would race this under the default parallel runner.
+    #[test]
+    fn losing_window_focus_makes_the_bar_faint() {
+        use ratatui::style::Modifier;
+
+        // The played part of the bar is the accent; cell 5 is its first.
+        let played = |focused| {
+            Theme::set_focused(focused);
+            buffer(30, 1.0)[(5, 0)].style()
+        };
+
+        let bright = played(true);
+        let faint = played(false);
+        Theme::set_focused(true);
+
+        assert_eq!(bright.fg, faint.fg, "the hue is unchanged");
+        assert!(!bright.add_modifier.contains(Modifier::DIM));
+        assert!(
+            faint.add_modifier.contains(Modifier::DIM),
+            "an unfocused window should draw the accent faint"
+        );
     }
 
     #[test]

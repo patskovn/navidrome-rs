@@ -85,6 +85,12 @@ pub struct State {
     pub session: Session,
     pub player: player::State,
     pub status: Option<String>,
+    /// Whether the terminal window itself has focus, which dims the accent.
+    ///
+    /// Starts true: a terminal that does not report focus never sends the
+    /// events, and the app should look normal there rather than permanently
+    /// faint.
+    pub focused: bool,
 }
 
 impl Default for State {
@@ -95,6 +101,7 @@ impl Default for State {
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
             status: None,
+            focused: true,
         }
     }
 }
@@ -323,6 +330,13 @@ impl Reducer for Feature {
 
 /// Global keys, then whatever the focused tab wants.
 fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
+    // Window focus, which the accent follows. Reported only by terminals that
+    // support focus tracking; where they do not, `focused` stays true.
+    if let Event::FocusGained | Event::FocusLost = event {
+        state.focused = matches!(event, Event::FocusGained);
+        return Effect::none();
+    }
+
     let Event::Key(key) = &event else {
         return Effect::none();
     };
@@ -641,6 +655,32 @@ mod test {
             store.state().library().unwrap().albums.query,
             "",
             "space should not have been typed"
+        );
+    }
+
+    #[tokio::test]
+    async fn window_focus_drives_the_accent() {
+        let mut store = signed_in_store();
+        assert!(
+            store.state().focused,
+            "a terminal that never reports is bright"
+        );
+
+        store.send(Action::Event(Event::FocusLost), |s| s.focused = false);
+        store.send(Action::Event(Event::FocusGained), |s| s.focused = true);
+        store.finish();
+    }
+
+    /// The focus events must not fall through to the tab as text.
+    #[tokio::test]
+    async fn focus_events_are_swallowed() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(Event::FocusLost), |s| s.focused = false);
+        store.settle();
+        assert_eq!(
+            store.state().library().unwrap().albums.query,
+            "",
+            "a focus change is not a keystroke"
         );
     }
 
