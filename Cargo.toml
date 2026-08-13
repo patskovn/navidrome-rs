@@ -1,5 +1,6 @@
 [package]
 name = "navidrome-rs"
+description = "A tui client for connecting to subsonic media servers"
 version = "0.1.0"
 edition = "2024"
 
