@@ -101,12 +101,28 @@ pub(super) fn coffee_bar(c: &mut Canvas, frame: u64) {
         bay += BAY;
     }
 
-    // On a tall floor, a nearer row of tables, in front of the counter too.
-    if h - floor >= 24 {
-        let mut x = first + BAY;
-        while x < w + BAY {
-            table(c, frame, x, h - 3, hash_at((x - ox).div_euclid(BAY), 406));
-            x += BAY;
+    // On a taller floor, more rows of customers down to the front, in front
+    // of the counter too: as many as the height has room for, each row
+    // staggered half a table from the last so nobody stands in a column,
+    // nearer rows drawn over farther ones. Mostly tables; now and then two
+    // people standing, coffee in hand, talking.
+    let (back, front) = (floor + 6, h - 3);
+    if front - back >= 18 {
+        let rows = ((front - back) / 13).max(1);
+        for r in 1..=rows {
+            let y = back + (front - back) * r / rows;
+            let stagger = if r % 2 == 1 { BAY / 2 } else { 0 };
+            let mut x = first + stagger;
+            while x < w + BAY {
+                let slot = (x - ox).div_euclid(BAY / 2);
+                let seed = hash_at(slot * 37 + r, 406);
+                if seed.is_multiple_of(5) {
+                    standing_pair(c, frame, x, y, seed);
+                } else {
+                    table(c, frame, x, y, seed);
+                }
+                x += BAY;
+            }
         }
     }
 
@@ -463,6 +479,62 @@ fn waiting(c: &mut Canvas, frame: u64, x: i32, feet: i32, who: Look) {
         ],
         false,
     );
+}
+
+/// Two people standing, cups in hand, facing each other and taking turns
+/// talking — the speaker's bubble up, the listener nodding — like the pairs
+/// at the café window's counter.
+fn standing_pair(c: &mut Canvas, frame: u64, x: i32, feet: i32, seed: u64) {
+    let at = phase_at(frame, 1, unit(seed)) * 4.0;
+    let turn = at as u64;
+    let a_talks = turn.is_multiple_of(2);
+    let speaking = at.fract() < 0.75;
+    let nod = phase_at(frame, 4, unit(seed.wrapping_add(2))) < 0.12;
+    for (k, (px, right)) in [(x - 9, true), (x + 2, false)].into_iter().enumerate() {
+        let who = look(seed.wrapping_add(k as u64 * 17));
+        let talker = (k == 0) == a_talks;
+        let head_drop = (!talker && nod) as i32;
+        let palette = [
+            ('h', who.hair),
+            ('f', who.skin),
+            ('e', rgb(0x2a1d18)),
+            ('c', who.coat),
+            ('t', who.trousers),
+            ('s', rgb(0x1a1a1a)),
+        ];
+        let top = feet - 15;
+        sprite(
+            c,
+            px,
+            top + head_drop,
+            &["..hhh..", ".hhhhf.", ".hhhef.", "..hff..", "...f..."],
+            &palette,
+            !right,
+        );
+        sprite(
+            c,
+            px,
+            top + 5,
+            &[
+                "..ccc..", ".ccccc.", ".ccccc.", ".ccccc.", ".cccc..", ".cccc..", "..tt...",
+                "..tt...", "..tt...", "..tt...", "..ss...",
+            ],
+            &palette,
+            !right,
+        );
+        // A cup held at the chest; the speaker's mouth moving.
+        let fx = |dx: i32| if right { px + dx } else { px + 6 - dx };
+        c.set(fx(5), top + 7, who.skin);
+        c.rect(fx(6).min(fx(7)), top + 6, 2, 2, CUP);
+        if talker && speaking && phase(frame, 20) < 0.5 {
+            c.set(fx(5), top + 3, rgb(0x5a2a2a));
+        }
+    }
+    if speaking {
+        let tx = if a_talks { x - 9 + 3 } else { x + 2 + 3 };
+        let kind = hash(seed.wrapping_add(turn)) % 6;
+        super::cafe_street::bubble(c, frame, tx, feet - 22, kind, a_talks);
+    }
 }
 
 /// A round café table with one or two customers, by `seed`: sipping, typing

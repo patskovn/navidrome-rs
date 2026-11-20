@@ -716,6 +716,33 @@ mod test {
         assert!(quiet >= 10, "no pauses: {quiet} quiet frames");
     }
 
+    /// On a tall screen the coffee bar's floor fills with people, rows of
+    /// them down from the counter to the front, not one row and a gap. In the
+    /// band between, edge density measured 0.056 to 0.070 with the rows and
+    /// 0.000 without.
+    #[test]
+    fn a_tall_coffee_bar_is_full_of_people() {
+        for (w, h) in [(110usize, 120usize), (200, 160), (300, 100)] {
+            let canvas = Scene::CoffeeBar.render(0, w, h);
+            let (_, oy) = super::cafe::bar_origin(&canvas);
+            let floor = (oy + 44) as usize;
+            let (mut sharp, mut total) = (0usize, 0usize);
+            for y in floor + 10..h - 14 {
+                for x in 0..w - 1 {
+                    let (a, b) = (canvas.get(x, y), canvas.get(x + 1, y));
+                    let d: i32 = (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();
+                    total += 1;
+                    sharp += (d > 90) as usize;
+                }
+            }
+            let density = sharp as f64 / total.max(1) as f64;
+            assert!(
+                density >= 0.02,
+                "{w}x{h}: the middle floor is empty ({density:.3})"
+            );
+        }
+    }
+
     /// The wall reaches the top on a tall canvas: no row there is left black.
     #[test]
     fn the_wall_runs_to_the_ceiling() {

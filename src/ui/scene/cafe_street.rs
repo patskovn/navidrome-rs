@@ -432,7 +432,7 @@ fn stool(c: &mut Canvas, x: i32, ledge: i32, floor: i32) {
 /// A speech bubble centred over `x`, its top at `y`: dots that come and go
 /// as the sentence goes on, or now and then a heart or a note. The tail
 /// points down toward the speaker.
-fn bubble(c: &mut Canvas, frame: u64, x: i32, y: i32, kind: u64, tail_right: bool) {
+pub(super) fn bubble(c: &mut Canvas, frame: u64, x: i32, y: i32, kind: u64, tail_right: bool) {
     let (left, width, height) = (x - 4, 9, 6);
     c.rect(left + 1, y, width - 2, height, BUBBLE);
     c.rect(left, y + 1, width, height - 2, BUBBLE);
