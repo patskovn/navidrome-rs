@@ -412,7 +412,7 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
     c.rect(0, desk, w, h - desk, WOOD_DARK);
     c.rect(0, desk, w, 3, WOOD);
     c.rect(0, desk, w, 1, WOOD_EDGE);
-    under_desk(c, frame, ox, desk, w, h);
+    under_desk(c, ox, desk, w, h);
 
     // Desk things beside the core.
     if left >= 28 {
@@ -441,12 +441,12 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
 const APRON: i32 = 4;
 
 /// Below the desktop: the apron with a drawer, legs, the back wall in shadow,
-/// a floor with a rug, and a chair, a yarn basket and slippers on it.
+/// a floor with a rug, and a chair and a basket of yarn on it.
 ///
 /// Laid out from whatever height is left. With too little, the space is
 /// all apron and wood, as the desk used to be; items that would not fit are
 /// left out rather than squashed.
-fn under_desk(c: &mut Canvas, frame: u64, ox: i32, desk: i32, w: i32, h: i32) {
+fn under_desk(c: &mut Canvas, ox: i32, desk: i32, w: i32, h: i32) {
     let apron_top = desk + 3;
     let space_top = apron_top + APRON;
     let room = h - space_top;
@@ -544,70 +544,67 @@ fn under_desk(c: &mut Canvas, frame: u64, ox: i32, desk: i32, w: i32, h: i32) {
         c.rect(x, space_top, 1, skirting + 1 - space_top, rgb(0x4a2f22));
     }
 
-    // A basket of yarn, a strand wandering off across the floor.
-    if floor - space_top >= 6 {
-        let (bx, by) = (ox + 58, floor - 3);
-        for (k, (dx, r, color)) in [
-            (3.0, 2.6, 0xd1495b),
-            (7.0, 2.4, 0x7ee0d6),
-            (5.0, 2.2, 0xe9c46a),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            c.disc(
-                bx as f64 + dx,
-                by as f64 - 0.5 - k as f64 * 0.3,
-                r,
-                rgb(color),
+    // A basket of yarn: woven, three balls in it, knitting needles stuck in.
+    if floor - space_top >= 10 {
+        let (bx, by) = (ox + 56, floor - 4);
+        // Needles first, behind the balls, crossed and leaning out.
+        for (x0, x1) in [(bx + 3, bx - 2), (bx + 9, bx + 14)] {
+            c.line(
+                (x0 as f64, (by + 1) as f64),
+                (x1 as f64, (by - 8) as f64),
+                rgb(0xcfc6b8),
             );
         }
-        c.rect(bx, by, 11, 5, rgb(0xb08a5a));
-        for x in (bx..bx + 11).step_by(2) {
-            c.rect(x, by + 1, 1, 3, rgb(0x8c6a42));
+        c.set(bx - 2, by - 9, rgb(0xd1495b));
+        c.set(bx + 14, by - 9, rgb(0x7ee0d6));
+        // The balls, each with a few turns of winding and a highlight.
+        for (dx, dy, color) in [(3, -2, 0xd1495b), (11, -2, 0x7ee0d6), (7, -4, 0xe9c46a)] {
+            let (cx, cy) = ((bx + dx) as f64 + 0.5, (by + dy) as f64 + 0.5);
+            let color = rgb(color);
+            c.disc(cx, cy, 3.2, color);
+            let shade = mix(color, rgb(0x000000), 0.35);
+            for k in -1..=1 {
+                c.line(
+                    (cx - 2.0, cy + k as f64 * 1.5 + 1.0),
+                    (cx + 2.0, cy + k as f64 * 1.5 - 1.0),
+                    shade,
+                );
+            }
+            c.set(cx as i32 - 1, cy as i32 - 2, mix(color, rgb(0xffffff), 0.5));
         }
-        c.rect(bx, by, 11, 1, rgb(0xc9a46e));
-        // The strand stirs, as if the cat had only just let go of it.
-        let stir = (phase(frame, 1) * TAU).sin();
-        for i in 0..14 {
-            let x = bx + 11 + i;
-            let y = by + 2 + ((i as f64 * 0.7 + stir).sin() * 1.2).round() as i32 + i / 5;
-            c.set(x, y.min(h - 1), rgb(0xd1495b));
+        // The basket: a rim, and weave in alternating rows.
+        c.rect(bx, by, 15, 5, rgb(0x9c7648));
+        for y in by + 1..by + 5 {
+            for x in bx..bx + 15 {
+                if (x + y).rem_euclid(3) == 0 {
+                    c.set(x, y, rgb(0x7a5a34));
+                }
+            }
         }
+        c.rect(bx - 1, by, 17, 1, rgb(0xc9a46e));
+        c.rect(bx, by + 4, 15, 1, rgb(0x6b4e2c));
     }
 
-    // Slippers, side by side on the rug.
-    if h - floor >= 5 {
-        let (sx, sy) = (ox + 74, floor + 1);
-        for dx in [0, 6] {
-            c.rect(sx + dx, sy + 1, 5, 2, rgb(0xe8a0b4));
-            c.rect(sx + dx, sy + 1, 5, 1, rgb(0xf6c6d4));
-            c.rect(sx + dx + 1, sy, 3, 1, rgb(0xf6c6d4));
-        }
-    }
-
-    // A small wooden chair, pushed in under the desk, standing on the rug.
-    // Its back is as tall as the space allows, up to eight rows; under four
-    // it would not read as a chair, so it is left out.
-    let seat = floor - 5;
-    let back = (seat - space_top - 1).min(8);
-    let back_top = seat - back;
+    // A wooden chair in profile, pushed in, facing the desk: a tall back
+    // post, the seat, a front leg and a brace between them. In profile it
+    // reads as a chair even a few pixels high, which a front view did not.
+    let seat = floor - 6;
+    let back = (seat - space_top - 1).min(10);
     if back >= 4 {
-        let (cx, wood, dark) = (ox + 30, rgb(0x8a5a3c), rgb(0x5c3b28));
-        // Back: two posts and two rails.
-        c.rect(cx, back_top, 2, seat - back_top, dark);
-        c.rect(cx + 12, back_top, 2, seat - back_top, dark);
-        c.rect(cx, back_top, 14, 2, wood);
-        if back >= 6 {
-            c.rect(cx, back_top + 4, 14, 1, wood);
-        }
-        // Seat, and legs down to the floor.
-        c.rect(cx - 1, seat, 16, 2, wood);
-        c.rect(cx - 1, seat, 16, 1, rgb(0xa06c4a));
-        for lx in [cx, cx + 12] {
-            c.rect(lx, seat + 2, 2, floor + 2 - (seat + 2), dark);
-        }
-        c.rect(cx + 2, seat + 4, 10, 1, dark);
+        let (cx, wood, dark, light) = (ox + 30, rgb(0x8a5a3c), rgb(0x5c3b28), rgb(0xa06c4a));
+        let back_top = seat - back;
+        // Back post, with a slight backward lean at the top.
+        c.rect(cx, back_top + 2, 2, floor + 1 - (back_top + 2), wood);
+        c.rect(cx, back_top + 2, 1, floor + 1 - (back_top + 2), light);
+        c.rect(cx - 1, back_top, 2, 2, wood);
+        // A backrest slat, seen edge-on.
+        c.rect(cx + 2, back_top + 2, 1, (back / 2).max(2), dark);
+        // Seat.
+        c.rect(cx, seat, 13, 2, wood);
+        c.rect(cx, seat, 13, 1, light);
+        // Front leg and the brace.
+        c.rect(cx + 11, seat + 2, 2, floor + 1 - (seat + 2), dark);
+        c.rect(cx + 2, floor - 2, 9, 1, dark);
     }
 }
 
