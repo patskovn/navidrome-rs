@@ -22,6 +22,11 @@ const LEDGE: i32 = 40;
 const PANE: i32 = 48;
 /// Seats along the counter beyond the core come in bays this wide.
 const SEATS: i32 = 40;
+/// The counter front's height, ledge to floor: a bar, not a wall. Extra
+/// height below goes to the café floor and the tables on it.
+pub(super) const BAR: i32 = 16;
+/// Tables on the café floor repeat this far apart.
+const TABLES: i32 = 44;
 /// The speech bubbles' paper: a colour nothing else in the scene uses, so a
 /// test can find who is talking.
 pub(super) const BUBBLE: Rgb = rgb(0xfbf7ef);
@@ -171,7 +176,7 @@ pub(super) fn cafe_street(c: &mut Canvas, frame: u64) {
     c.rect(0, ledge, w, 1, LEDGE_EDGE);
     c.rect(0, ledge + 2, w, 1, rgb(0x2e1c14));
     // Panelling, a brass foot rail, and floor tiles where there is room.
-    let floor = (ledge + 14).max(h - (h - ledge) / 3);
+    let floor = ledge + BAR;
     for x in 0..w {
         if (x - ox).rem_euclid(12) == 0 {
             c.rect(x, ledge + 3, 1, floor - ledge - 3, rgb(0x3a2418));
@@ -280,6 +285,33 @@ pub(super) fn cafe_street(c: &mut Canvas, frame: u64) {
         0x5eed,
         false,
     );
+
+    // Between us and the bar, the café floor: rows of tables, as many as the
+    // height has room for, staggered half a table, back to front — the same
+    // tables and talkers as the coffee bar's.
+    let (back, front) = (floor + 13, h - 2);
+    if front >= back {
+        let rows = (front - back) / 13 + 1;
+        for r in 0..rows {
+            let y = if rows == 1 {
+                front
+            } else {
+                back + (front - back) * r / (rows - 1)
+            };
+            let stagger = if r % 2 == 0 { TABLES / 2 } else { 0 };
+            let mut x = ox - TABLES * ((ox + TABLES - 1) / TABLES + 1) + stagger;
+            while x < w + TABLES {
+                let slot = (x - ox).div_euclid(TABLES / 2);
+                let seed = hash_at(slot * 41 + r, 517);
+                if seed.is_multiple_of(5) {
+                    super::cafe::standing_pair(c, frame, x, y, seed);
+                } else {
+                    super::cafe::table(c, frame, x, y, seed);
+                }
+                x += TABLES;
+            }
+        }
+    }
 }
 
 /// What a sitter is doing.

@@ -743,6 +743,55 @@ mod test {
         }
     }
 
+    /// The café window's bar stays bar-height however tall the screen: its
+    /// front, from the ledge to the floor tiles, is never more than `BAR`.
+    /// It once grew to a third of the screen and read as a wall.
+    #[test]
+    fn the_cafe_bar_stays_bar_height() {
+        let tile_dark = rgb(0x2a2420);
+        for (w, h) in [(180usize, 88usize), (110, 120), (200, 160)] {
+            let canvas = Scene::CafeWindow.render(0, w, h);
+            let (ox, oy) = super::cafe_street::cafe_origin(&canvas);
+            let ledge = (oy + 40) as usize;
+            // Down a column clear of stools and people, to the first tile.
+            let x = (ox + 60) as usize;
+            let tiles = (ledge..h)
+                .find(|&y| canvas.get(x, y) == tile_dark || canvas.get(x, y) == rgb(0x3a322a));
+            let tiles = tiles.unwrap_or_else(|| panic!("{w}x{h}: no floor below the bar"));
+            assert!(
+                tiles - ledge <= super::cafe_street::BAR as usize + 1,
+                "{w}x{h}: the bar front is {} rows",
+                tiles - ledge
+            );
+        }
+    }
+
+    /// Below the café window's bar, the floor fills with customers rather
+    /// than standing empty. Edge density there measured 0.038 to 0.056 with
+    /// the tables and 0.000 without.
+    #[test]
+    fn the_cafe_floor_has_customers() {
+        for (w, h) in [(180usize, 88usize), (110, 120), (200, 160)] {
+            let canvas = Scene::CafeWindow.render(0, w, h);
+            let (_, oy) = super::cafe_street::cafe_origin(&canvas);
+            let floor = (oy + 40 + super::cafe_street::BAR) as usize;
+            let (mut sharp, mut total) = (0usize, 0usize);
+            for y in floor + 2..h - 1 {
+                for x in 0..w - 1 {
+                    let (a, b) = (canvas.get(x, y), canvas.get(x + 1, y));
+                    let d: i32 = (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();
+                    total += 1;
+                    sharp += (d > 90) as usize;
+                }
+            }
+            let density = sharp as f64 / total.max(1) as f64;
+            assert!(
+                density >= 0.015,
+                "{w}x{h}: the café floor is empty ({density:.3})"
+            );
+        }
+    }
+
     /// The wall reaches the top on a tall canvas: no row there is left black.
     #[test]
     fn the_wall_runs_to_the_ceiling() {

@@ -484,7 +484,7 @@ fn waiting(c: &mut Canvas, frame: u64, x: i32, feet: i32, who: Look) {
 /// Two people standing, cups in hand, facing each other and taking turns
 /// talking — the speaker's bubble up, the listener nodding — like the pairs
 /// at the café window's counter.
-fn standing_pair(c: &mut Canvas, frame: u64, x: i32, feet: i32, seed: u64) {
+pub(super) fn standing_pair(c: &mut Canvas, frame: u64, x: i32, feet: i32, seed: u64) {
     let at = phase_at(frame, 1, unit(seed)) * 4.0;
     let turn = at as u64;
     let a_talks = turn.is_multiple_of(2);
@@ -539,7 +539,7 @@ fn standing_pair(c: &mut Canvas, frame: u64, x: i32, feet: i32, seed: u64) {
 
 /// A round café table with one or two customers, by `seed`: sipping, typing
 /// on a laptop, reading.
-fn table(c: &mut Canvas, frame: u64, x: i32, floor: i32, seed: u64) {
+pub(super) fn table(c: &mut Canvas, frame: u64, x: i32, floor: i32, seed: u64) {
     let top = floor - 7;
     // People first, so the tabletop sits in front of their laps.
     let left = look(seed);
