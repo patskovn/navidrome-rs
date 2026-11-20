@@ -297,6 +297,20 @@ fn core_origin(c: &Canvas) -> (i32, i32) {
 
 // ---------------------------------------------------------------- the desk --
 
+/// The desk scene's own anchor: like [`core_origin`], but raised until the
+/// cat — whose lowest row is the core's row 39 — sits at least a third of the
+/// height up from the bottom. The desk below simply grows.
+///
+/// Never more than four rows above the canvas top, which on the smallest
+/// canvas costs one row of the window frame and nothing else.
+fn desk_origin(c: &Canvas) -> (i32, i32) {
+    let (ox, bottom_anchored) = core_origin(c);
+    let h = c.height as i32;
+    // The cat's bottom row is `oy + 39`; below it must be at least `h / 3`.
+    let third_up = h - (h + 2) / 3 - 40;
+    (ox, bottom_anchored.min(third_up).max(-4))
+}
+
 const WALL_TOP: Rgb = rgb(0x120e24);
 const WALL: Rgb = rgb(0x1a1530);
 const WALL_LOW: Rgb = rgb(0x2a1f45);
@@ -310,7 +324,7 @@ const LEAF_LIT: Rgb = rgb(0x6fb35f);
 const POT: Rgb = rgb(0xb5603c);
 
 fn rainy_desk(c: &mut Canvas, frame: u64) {
-    let (ox, oy) = core_origin(c);
+    let (ox, oy) = desk_origin(c);
     let (w, h) = (c.width as i32, c.height as i32);
     let desk = oy + 40; // the desktop's top edge, in absolute rows
     let left = ox; // room beside the core, in pixels
@@ -397,7 +411,9 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
     c.rect(0, desk, w, h - desk, WOOD_DARK);
     c.rect(0, desk, w, 3, WOOD);
     c.rect(0, desk, w, 1, WOOD_EDGE);
-    for (line, row) in [(0u64, desk + 5), (1, desk + 8), (2, desk + 11)] {
+    // Grain every third row, however far down the desk now reaches.
+    for (line, row) in (desk + 5..h).step_by(3).enumerate() {
+        let line = line as u64;
         let mut x = 0;
         while x < w {
             let len = 8 + (hash_at(x - ox, line * 10) % 18) as i32;
@@ -1343,9 +1359,11 @@ mod test {
             .filter(|&(w, h)| w >= WIDTH && h >= HEIGHT)
         {
             let canvas = Scene::RainyDesk.render(0, w, h);
-            let (ox, oy) = ((w - WIDTH) / 2, h - HEIGHT);
+            // The frame's left side runs from the core's row 3 to 33; row 5
+            // is on the canvas even at the lowest anchor.
+            let (ox, oy) = desk_origin(&canvas);
             assert_eq!(
-                canvas.get(ox + 10, oy + 3),
+                canvas.get((ox + 10) as usize, (oy + 5) as usize),
                 rgb(0x4a3328),
                 "window frame moved at {w}x{h}"
             );
@@ -1372,6 +1390,33 @@ mod test {
                 assert!(
                     left >= 100 && right >= 100,
                     "{scene:?} at {w}x{h}: {left} bright pixels left of the core, {right} right"
+                );
+            }
+        }
+    }
+
+    /// The cat sits at least a third of the way up, at every size — found in
+    /// the picture itself, as the lowest row of its fur under the window.
+    #[test]
+    fn the_cat_sits_at_least_a_third_up() {
+        let fur = rgb(0x3a3542);
+        for (w, h) in SIZES
+            .into_iter()
+            .chain([(200, 160), (96, 100)])
+            .filter(|&(w, h)| w >= WIDTH && h >= HEIGHT)
+        {
+            for frame in [0, 40] {
+                let canvas = Scene::RainyDesk.render(frame, w, h);
+                let ox = (w - WIDTH) / 2;
+                let lowest = (0..h)
+                    .rev()
+                    .find(|&y| (ox + 17..ox + 44).any(|x| canvas.get(x, y) == fur))
+                    .unwrap_or_else(|| panic!("no cat at {w}x{h}"));
+                let below = h - 1 - lowest;
+                assert!(
+                    below * 3 >= h,
+                    "{w}x{h}: only {below} rows under the cat, need {}",
+                    h.div_ceil(3)
                 );
             }
         }
