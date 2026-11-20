@@ -496,7 +496,10 @@ fn draw_tracks(
 
     let list = List::new(items)
         .highlight_style(Theme::accent().reversed())
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the marker column even with no row selected, so rows do
+        // not jump sideways the moment focus arrives.
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     let mut list_state = ListState::default();
     if !detail.tracks.is_empty() {
         list_state.select(Some(detail.selected));

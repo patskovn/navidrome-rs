@@ -320,7 +320,10 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, state: &State) {
 
     let list = List::new(items)
         .highlight_style(Theme::accent().reversed())
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the marker column even with no row selected, so rows do
+        // not jump sideways the moment focus arrives.
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     let mut list_state = ListState::default();
     if state.focus == PaneFocus::List && !state.results.is_empty() {
         list_state.select(Some(state.selected));
@@ -512,6 +515,48 @@ mod test {
         store.send(Action::Event(key(KeyCode::Esc)), |_| {});
         assert_eq!(store.pending_len(), 1);
         store.receive_next(|_| {});
+    }
+
+    fn render(state: &State) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        use crate::ui::DrawingContext;
+        use crate::ui::ModalQueue;
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let queue = ModalQueue::new(area);
+                let mut ctx = DrawingContext::new(frame, &queue);
+                ui(&mut ctx, state);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Regression: the marker column was only reserved while a row was
+    /// selected, so moving focus into the results shoved every row sideways.
+    #[test]
+    fn rows_do_not_shift_when_focus_moves_into_the_results() {
+        let column = |focus| {
+            let screen = render(&State {
+                focus,
+                ..with_results()
+            });
+            let row = &screen[4]; // the second result, never the selected one
+            row.find("Chillhop")
+                .unwrap_or_else(|| panic!("{screen:#?}"))
+        };
+        assert_eq!(column(PaneFocus::Search), column(PaneFocus::List));
     }
 
     /// The summary column is budgeted: a long name gives way, the summary

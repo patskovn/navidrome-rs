@@ -376,7 +376,10 @@ fn draw_picker(
 
     let list = List::new(items)
         .highlight_style(Theme::accent().reversed())
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the marker column even with no row selected, so rows do
+        // not jump sideways the moment focus arrives.
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     let mut state = ListState::default();
     state.select(Some(picker.selected));
     StatefulWidget::render(list, inner, frame.buffer_mut(), &mut state);
@@ -431,7 +434,10 @@ fn draw_queue(
 
     let list = List::new(items)
         .highlight_style(Theme::selection())
-        .highlight_symbol("▶ ");
+        .highlight_symbol("▶ ")
+        // Reserve the marker column even with no row selected, so rows do
+        // not jump sideways the moment focus arrives.
+        .highlight_spacing(ratatui::widgets::HighlightSpacing::Always);
     let mut state = ListState::default();
     state.select(Some(cursor.min(player.queue.len() - 1)));
     StatefulWidget::render(list, rows[0], frame.buffer_mut(), &mut state);
