@@ -249,7 +249,9 @@ Reducers are testable because the server sits behind the `Library` trait; use
   ignored by default because it reaches someone else's server.
 - **Searching radio-browser.info asks twice.** Its filters AND together, so a
   query is sent once as a name and once as a tag, in parallel, and merged by
-  station id, most listened first. Mirrors come from
+  station id, most listened first. A query with commas is instead a list of
+  tags that must all match (`tagList`; `lofi, chill`). Commas, not spaces,
+  because tags and names contain spaces. Mirrors come from
   `all.api.radio-browser.info/json/servers` on first use (not at startup),
   with a short fallback list; requests fail over between them. HLS stations
   are dropped from results, since they cannot be played. Picking a result

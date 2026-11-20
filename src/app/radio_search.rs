@@ -260,7 +260,7 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, state: &State) {
         .render_widget(Paragraph::new(text).block(block), rows[0]);
 
     let hints = if focused {
-        " type a name or a genre · ↓ results · Esc back"
+        " a name or a genre · several tags: a, b · ↓ results · Esc back"
     } else {
         " ↵ listen and add · ↑↓ move · type to refine · Esc back"
     };
@@ -276,15 +276,23 @@ pub fn ui(ctx: &mut crate::ui::DrawingContext, state: &State) {
     } else if state.searched && state.results.is_empty() {
         Some(Line::from("  No stations match").style(Theme::dim()))
     } else if !state.searched && state.results.is_empty() {
-        Some(Line::from(vec![
-            Span::styled("  Try ", Theme::dim()),
-            Span::raw("lofi"),
-            Span::styled(", ", Theme::dim()),
-            Span::raw("synthwave"),
-            Span::styled(", ", Theme::dim()),
-            Span::raw("chillhop"),
-            Span::styled(" or a station's name", Theme::dim()),
-        ]))
+        // Examples are set apart by "or", never by commas: a comma here is
+        // syntax, and listing "lofi, synthwave" would teach the wrong thing.
+        let hint = vec![
+            Line::from(vec![
+                Span::styled("  Try ", Theme::dim()),
+                Span::raw("lofi"),
+                Span::styled(" or ", Theme::dim()),
+                Span::raw("synthwave"),
+                Span::styled(" or a station's name", Theme::dim()),
+            ]),
+            Line::from(vec![
+                Span::styled("  Stations with every tag: ", Theme::dim()),
+                Span::raw("lofi, chill"),
+            ]),
+        ];
+        ctx.frame().render_widget(Paragraph::new(hint), rows[1]);
+        return;
     } else {
         None
     };

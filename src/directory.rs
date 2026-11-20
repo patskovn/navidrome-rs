@@ -143,6 +143,41 @@ fn found_from(wire: Wire) -> Option<Found> {
     })
 }
 
+/// How a query is put to the directory.
+#[derive(Debug, PartialEq, Eq)]
+enum Plan {
+    Nothing,
+    /// One phrase, matched against names and against tags.
+    NameOrTag(String),
+    /// A comma-separated query: stations carrying every one of these tags.
+    ///
+    /// Commas, not spaces, separate them, because tags and names have spaces
+    /// in them — "lofi hip hop" is one tag, "I Love Chillhop" one name.
+    AllTags(Vec<String>),
+}
+
+fn plan(query: &str) -> Plan {
+    let query = query.trim();
+    if !query.contains(',') {
+        return match query {
+            "" => Plan::Nothing,
+            phrase => Plan::NameOrTag(phrase.to_string()),
+        };
+    }
+    let tags: Vec<String> = query
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .collect();
+    // "lofi," is still a tag search, just of one tag; "," is no search.
+    if tags.is_empty() {
+        Plan::Nothing
+    } else {
+        Plan::AllTags(tags)
+    }
+}
+
 /// One list from a name search and a tag search: each station once, the most
 /// listened first.
 ///
@@ -283,10 +318,17 @@ impl RadioBrowser {
 #[async_trait]
 impl RadioDirectory for RadioBrowser {
     async fn search(&self, query: &str) -> anyhow::Result<Vec<Found>> {
-        let query = query.trim();
-        if query.is_empty() {
-            return Ok(Vec::new());
-        }
+        let query = match plan(query) {
+            Plan::Nothing => return Ok(Vec::new()),
+            // The directory's `tagList` is an AND of partial matches: every
+            // tag must be on the station, and `chill` also finds `chillout`.
+            Plan::AllTags(tags) => {
+                let all = self.search_by("tagList", &tags.join(",")).await?;
+                return Ok(merge([all]));
+            }
+            Plan::NameOrTag(phrase) => phrase,
+        };
+        let query = query.as_str();
         let (by_name, by_tag) =
             tokio::join!(self.search_by("name", query), self.search_by("tag", query));
         match (by_name, by_tag) {
@@ -430,14 +472,30 @@ mod test {
                     let n = socket.read(&mut request).await.unwrap_or(0);
                     let request = String::from_utf8_lossy(&request[..n]).to_string();
                     let target = request.split_whitespace().nth(1).unwrap_or("/").to_string();
-                    let body = if target.contains("name=lofi") {
-                        r#"[{"stationuuid":"n1","name":"Lofi Name FM","url_resolved":"https://n1.radio.invalid/","clickcount":10}]"#
-                    } else if target.contains("tag=lofi") {
-                        r#"[{"stationuuid":"t1","name":"Tagged Lofi","url_resolved":"https://t1.radio.invalid/","clickcount":99},{"stationuuid":"n1","name":"Lofi Name FM","url_resolved":"https://n1.radio.invalid/","clickcount":10}]"#
-                    } else if target.starts_with("/json/url/") {
-                        r#"{"ok":true}"#
-                    } else {
-                        "[]"
+                    // Decoded into exact parameters: substring matching
+                    // would let `name=lofi` answer for `name=lofi hip hop`.
+                    let url = reqwest::Url::parse(&format!("http://mirror{target}")).unwrap();
+                    let param = |key: &str| {
+                        url.query_pairs()
+                            .find(|(k, _)| k == key)
+                            .map(|(_, v)| v.into_owned())
+                    };
+                    let (name, tag, tag_list) = (param("name"), param("tag"), param("tagList"));
+                    let body = match (name.as_deref(), tag.as_deref(), tag_list.as_deref()) {
+                        (_, _, Some("lofi,chill")) => {
+                            r#"[{"stationuuid":"both","name":"Lofi and Chill","url_resolved":"https://both.radio.invalid/","clickcount":5}]"#
+                        }
+                        (_, Some("lofi hip hop"), _) => {
+                            r#"[{"stationuuid":"hh","name":"Hip Hop Lofi","url_resolved":"https://hh.radio.invalid/","clickcount":3}]"#
+                        }
+                        (Some("lofi"), _, _) => {
+                            r#"[{"stationuuid":"n1","name":"Lofi Name FM","url_resolved":"https://n1.radio.invalid/","clickcount":10}]"#
+                        }
+                        (_, Some("lofi"), _) => {
+                            r#"[{"stationuuid":"t1","name":"Tagged Lofi","url_resolved":"https://t1.radio.invalid/","clickcount":99},{"stationuuid":"n1","name":"Lofi Name FM","url_resolved":"https://n1.radio.invalid/","clickcount":10}]"#
+                        }
+                        _ if url.path().starts_with("/json/url/") => r#"{"ok":true}"#,
+                        _ => "[]",
                     };
                     let reply = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -466,6 +524,42 @@ mod test {
         assert_eq!(names, ["Tagged Lofi", "Lofi Name FM"]);
     }
 
+    #[test]
+    fn commas_make_a_query_a_list_of_tags() {
+        assert_eq!(plan("  "), Plan::Nothing);
+        assert_eq!(plan("lofi"), Plan::NameOrTag("lofi".into()));
+        // Spaces alone never split: they are part of tags and names.
+        assert_eq!(plan("lofi hip hop"), Plan::NameOrTag("lofi hip hop".into()));
+        assert_eq!(
+            plan("lofi, chill"),
+            Plan::AllTags(vec!["lofi".into(), "chill".into()])
+        );
+        assert_eq!(
+            plan(" lofi hip hop ,chill,, "),
+            Plan::AllTags(vec!["lofi hip hop".into(), "chill".into()])
+        );
+        assert_eq!(plan("lofi,"), Plan::AllTags(vec!["lofi".into()]));
+        assert_eq!(plan(" , ,"), Plan::Nothing);
+    }
+
+    /// Several tags go out as one `tagList`, not as a name or a single tag.
+    #[tokio::test]
+    async fn several_tags_ask_for_stations_with_all_of_them() {
+        let directory = RadioBrowser::build(None, Some(vec![mirror().await])).unwrap();
+        let found = directory.search("lofi, chill").await.unwrap();
+        let names: Vec<_> = found.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Lofi and Chill"]);
+    }
+
+    /// A phrase with spaces is one tag (or name), sent whole.
+    #[tokio::test]
+    async fn a_phrase_with_spaces_is_one_tag() {
+        let directory = RadioBrowser::build(None, Some(vec![mirror().await])).unwrap();
+        let found = directory.search("lofi hip hop").await.unwrap();
+        let names: Vec<_> = found.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["Hip Hop Lofi"]);
+    }
+
     #[tokio::test]
     async fn a_dead_mirror_fails_over_to_the_next() {
         let directory =
@@ -487,7 +581,7 @@ mod test {
     #[ignore = "reaches radio-browser.info"]
     async fn real_directory() {
         let directory = RadioBrowser::new().unwrap();
-        for query in ["lofi", "synthwave"] {
+        for query in ["lofi", "synthwave", "lofi, chill", "lofi, synthwave"] {
             let found = directory.search(query).await.unwrap();
             println!("DIRECTORY {query}: {} stations", found.len());
             for f in found.iter().take(5) {
