@@ -51,7 +51,8 @@ src/
 │   ├── radio_search.rs  station search, scoped inside the Radios tab
 │   ├── radios.rs    Radios tab: the server's stations, add (with preview), delete
 │   └── ui.rs        drawing for the root feature
-└── ui/              widgets ported from tgpt (see note below)
+└── ui/              widgets ported from tgpt (see note below), and
+                     scene/ — the pixel-art scenes (see below)
 ```
 
 ## Invariants — break these and things get subtly wrong
@@ -259,21 +260,47 @@ Reducers are testable because the server sits behind the `Library` trait; use
   previewing — the search stays open underneath, so Esc returns to the
   results. `cargo test real_directory -- --ignored` queries the real
   directory.
-- **The pixel-art scene runs on frame numbers, not seconds.** `ui/scene.rs`
-  paints each scene as a pure function of a frame (20 fps, 160 per loop), and
-  every moving part turns a whole number of times per loop with phase taken in
-  integers (`phase()`), so the loop is seamless by construction;
-  `a_scene_loops_exactly` holds new parts to it. Scenes are original art —
-  keep them that way rather than recreating anyone's characters. Scenes are
-  *composed for the space*, not stretched: `scene::fit` picks the largest whole
-  pixel size at which the 96×54 core fits, the canvas is the whole area at that
-  size, the core sits bottom-centre, and the rest is furnished procedurally —
-  wall to the ceiling, shelves, gallery, lights and more desk on the rainy
-  scene; sky, peaks, palms on the drive. New furniture belongs in the margins
-  and must keep to whole cycles per loop like everything else. The scene
-  animates on the visualiser tick, so while it is open the tick stays alive
-  even with nothing playing. `NAVIDROME_RS_SCENE_DIR=… cargo test
-  preview_scenes -- --ignored` writes frames as PNGs for looking at.
+- **Pixel-art scenes live in `ui/scene/`, and can be seen without the app.**
+  `cargo run --example scenes` is a fullscreen viewer (← → to switch, space to
+  pause, resize to watch a scene recompose); `-- --png DIR [WxH]` writes frames
+  as PNGs instead. The example includes `ui/scene/mod.rs` by `#[path]`, so the
+  module must not reach into the rest of the crate — the app picks a scene
+  with `Scene::for_words(text)` and builds that text itself. Seven scenes, one
+  file each: `desk.rs` (the default, with the cat), `cafe_street.rs`,
+  `cafe.rs`, `train.rs`, `flat.rs`, `study.rs`, `drive.rs`; `parts.rs` holds
+  what they share — `sprite` draws a picture written as rows of characters,
+  `street` lays out procedural building fronts, `walker`/`look` make people,
+  `rain`, and `scrolled` for parallax layers. Music picks a scene through the
+  `KEYWORDS` table in `mod.rs`; ← → in the app turns from there.
+- **Scenes run on frame numbers, not seconds.** Each scene is a pure function
+  of a frame (20 fps, 160 per loop); every moving part turns a whole number of
+  times per loop with phase taken in integers (`phase()`), so the loop is
+  seamless by construction, and `a_scene_loops_exactly` checks every scene at
+  five sizes. Scrolling layers (`scrolled`) obey the same rule: a layer's
+  period times its cycles must be a multiple of the loop, which also makes
+  its speed a whole number of pixels a frame. Scenes are original art — keep
+  them that way rather than recreating anyone's characters; the study scene's
+  writer is deliberately nobody's mascot.
+- **Scenes are composed for the space, not stretched.** `scene::fit` picks the
+  largest whole pixel size at which the 96×54 core fits; the canvas is the
+  whole area at that size. Each scene anchors its core with
+  `raised_origin(c, lowest, crop)` so its subject (the cat, the cup, the
+  barista, the passengers, the dog, the desk, the car — `lowest` is that
+  subject's bottom row) sits at least a third of the way up, and then
+  furnishes everything around it procedurally: things in the margins are
+  placed by slot relative to the core and varied by `hash_at`, so they keep
+  their place and look as the canvas grows. Windows and walls grow with the
+  height rather than leaving bare wall or floor. Two tests guard that:
+  `every_subject_sits_at_least_a_third_up`, and `extra_room_is_furnished`,
+  which measures sharp edges beside the core (bare wall measured 0.006,
+  the sparsest furnished side 0.019; the bar is 0.012). Whole-screen motion is
+  avoided — a carriage jumping a pixel read as a glitch — so movement lives in
+  people and things. The scene animates on the visualiser tick, which stays
+  alive while it is open.
+- **Hashes of hashes overflow in debug builds.** `hash()` returns a full
+  64-bit value; multiplying or adding to it again must use `wrapping_*`, and a
+  signed position must go through `hash_at`, or a test panics only for some
+  canvas sizes.
 - **The station form owns the keyboard, `?` included.** Stream URLs carry
   query strings, so the help key is text there. A preview is stopped only if
   it is still what is playing (`radios::PREVIEW_ID`): the user may have

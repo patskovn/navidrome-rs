@@ -80,7 +80,9 @@ pub(super) fn look(seed: u64) -> Look {
     ];
     const TROUSERS: [u32; 4] = [0x23232e, 0x2f3a5c, 0x4a3a2c, 0x3a3a44];
     const UMBRELLA: [u32; 6] = [0xd1495b, 0x2f6b9a, 0xe9c46a, 0x2a2a2a, 0x3fa39a, 0x8a5a9e];
-    let pick = |n: &[u32], k: u64| rgb(n[(hash(seed * 13 + k) % n.len() as u64) as usize]);
+    let pick = |n: &[u32], k: u64| {
+        rgb(n[(hash(seed.wrapping_mul(13).wrapping_add(k)) % n.len() as u64) as usize])
+    };
     Look {
         skin: pick(&SKIN, 1),
         hair: pick(&HAIR, 2),
@@ -187,11 +189,14 @@ fn facade(c: &mut Canvas, frame: u64, x: i32, width: i32, ground: i32, top: i32,
     while wy + 4 < shop_top - 3 {
         let mut wx = x + 2;
         while wx + 3 <= x + width - 2 {
-            let w_seed = seed * 1000 + (wx - x) as u64 * 31 + (wy - top) as u64;
+            let w_seed = seed
+                .wrapping_mul(1000)
+                .wrapping_add((wx - x) as u64 * 31 + (wy - top) as u64);
             let step = (phase(frame, 2) * 2.0) as u64;
-            let lit = hash(w_seed).is_multiple_of(2) ^ hash(w_seed + step * 7).is_multiple_of(9);
+            let lit = hash(w_seed).is_multiple_of(2)
+                ^ hash(w_seed.wrapping_add(step * 7)).is_multiple_of(9);
             let color = if lit {
-                rgb([0xffd98a, 0xffc070, 0xcfe6ff][(hash(w_seed + 3) % 3) as usize])
+                rgb([0xffd98a, 0xffc070, 0xcfe6ff][(hash(w_seed.wrapping_add(3)) % 3) as usize])
             } else {
                 mix(body, rgb(0x0a0a18), 0.55)
             };

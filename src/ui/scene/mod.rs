@@ -29,12 +29,22 @@ use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::widgets::Widget;
 
+mod cafe;
+mod cafe_street;
 mod desk;
 mod drive;
+mod flat;
 mod parts;
+mod study;
+mod train;
 
+use cafe::coffee_bar;
+use cafe_street::cafe_street;
 use desk::rainy_desk;
 use drive::synthwave_drive;
+use flat::sunset_flat;
+use study::night_study;
+use train::night_train;
 
 /// The core composition, in pixels: 16:9, small enough to read as pixel art.
 pub const WIDTH: usize = 96;
@@ -51,27 +61,71 @@ pub const FRAMES: u64 = 8 * FPS;
 pub enum Scene {
     /// Night, rain on the window, a lamp, a mug, a sleeping cat.
     RainyDesk,
+    /// A counter by a café window: a latte, and a rainy street outside with
+    /// people under umbrellas and a tram going by.
+    CafeWindow,
+    /// Behind the bar of a coffee shop: a barista at the espresso machine,
+    /// a chalkboard menu, customers at tables along the room.
+    CoffeeBar,
+    /// A carriage at night: passengers on the bench, and the country going
+    /// by outside in layers, each at its own speed.
+    NightTrain,
+    /// A flat at sunset: a dog asleep on the rug, a sofa, a beam of low sun
+    /// across the room with dust turning in it.
+    SunsetFlat,
+    /// Somebody at their desk from behind, writing and nodding along, snow
+    /// falling past a big window, a goldfish going round its bowl.
+    NightStudy,
     /// Neon sun, mountains, a grid rolling towards you, palms, a car.
     SynthwaveDrive,
 }
 
-/// Words in the music that call for a scene, checked in order.
-const KEYWORDS: &[(Scene, &[&str])] = &[(
-    Scene::SynthwaveDrive,
-    &[
-        "synth",
-        "retro",
-        "outrun",
-        "vapor",
-        "nightwave",
-        "80s",
-        "neon",
-        "cyber",
-    ],
-)];
+/// Words in the music that call for a scene, checked in order: the first
+/// scene with one of its words in the text wins. Anything else — lofi
+/// included — gets the rainy desk.
+const KEYWORDS: &[(Scene, &[&str])] = &[
+    (
+        Scene::SynthwaveDrive,
+        &[
+            "synth",
+            "retro",
+            "outrun",
+            "vapor",
+            "nightwave",
+            "80s",
+            "neon",
+            "cyber",
+        ],
+    ),
+    (
+        Scene::NightStudy,
+        &["study", "focus", "piano", "snow", "winter"],
+    ),
+    (
+        Scene::NightTrain,
+        &["train", "travel", "journey", "ambient"],
+    ),
+    (
+        Scene::SunsetFlat,
+        &["sunset", "sunday", "home", "cozy", "soul"],
+    ),
+    (
+        Scene::CoffeeBar,
+        &["coffee", "cafe", "café", "brunch", "acoustic", "morning"],
+    ),
+    (Scene::CafeWindow, &["jazz", "rain", "bossa", "city"]),
+];
 
 impl Scene {
-    pub const ALL: [Scene; 2] = [Scene::RainyDesk, Scene::SynthwaveDrive];
+    pub const ALL: [Scene; 7] = [
+        Scene::RainyDesk,
+        Scene::CafeWindow,
+        Scene::CoffeeBar,
+        Scene::NightTrain,
+        Scene::SunsetFlat,
+        Scene::NightStudy,
+        Scene::SynthwaveDrive,
+    ];
 
     /// The scene for what is playing, from the words in its title, artist
     /// and album — a station is only a name and a URL on the server, so its
@@ -89,6 +143,11 @@ impl Scene {
     pub fn name(self) -> &'static str {
         match self {
             Scene::RainyDesk => "Rainy desk",
+            Scene::CafeWindow => "Cafe window",
+            Scene::CoffeeBar => "Coffee bar",
+            Scene::NightTrain => "Night train",
+            Scene::SunsetFlat => "Sunset flat",
+            Scene::NightStudy => "Night study",
             Scene::SynthwaveDrive => "Synthwave drive",
         }
     }
@@ -105,6 +164,11 @@ impl Scene {
         let mut canvas = Canvas::new(width.max(1), height.max(1));
         match self {
             Scene::RainyDesk => rainy_desk(&mut canvas, frame),
+            Scene::CafeWindow => cafe_street(&mut canvas, frame),
+            Scene::CoffeeBar => coffee_bar(&mut canvas, frame),
+            Scene::NightTrain => night_train(&mut canvas, frame),
+            Scene::SunsetFlat => sunset_flat(&mut canvas, frame),
+            Scene::NightStudy => night_study(&mut canvas, frame),
             Scene::SynthwaveDrive => synthwave_drive(&mut canvas, frame),
         }
         canvas
@@ -266,6 +330,18 @@ impl Canvas {
             for x in (cx - r).floor() as i32..=(cx + r).ceil() as i32 {
                 let (dx, dy) = (x as f64 + 0.5 - cx, y as f64 + 0.5 - cy);
                 if dx * dx + dy * dy <= r * r {
+                    self.set(x, y, color);
+                }
+            }
+        }
+    }
+
+    /// A filled ellipse.
+    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, color: Rgb) {
+        for y in (cy - ry).floor() as i32..=(cy + ry).ceil() as i32 {
+            for x in (cx - rx).floor() as i32..=(cx + rx).ceil() as i32 {
+                let (dx, dy) = ((x as f64 + 0.5 - cx) / rx, (y as f64 + 0.5 - cy) / ry);
+                if dx * dx + dy * dy <= 1.0 {
                     self.set(x, y, color);
                 }
             }
@@ -470,26 +546,69 @@ mod test {
         }
     }
 
-    /// The extra room is furnished, not left as blank wall: both sides of the
-    /// core carry plenty of clearly bright pixels — books, pots, frames,
-    /// screens; neon and palms on the drive. Wall shades never get this bright;
-    /// with the side furniture taken out, the desk measured 4–16 such pixels a
-    /// side (the odd fairy light), against hundreds furnished.
+    /// Sharp changes between neighbouring pixels, per pixel, over columns
+    /// `xs`: furniture and objects make them, plain walls and gradients do not.
+    fn edge_density(c: &Canvas, xs: std::ops::Range<usize>) -> f64 {
+        let (mut sharp, mut total) = (0usize, 0usize);
+        for y in 0..c.height() {
+            for x in xs.clone().filter(|&x| x + 1 < c.width()) {
+                let (a, b) = (c.get(x, y), c.get(x + 1, y));
+                let d: i32 = (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();
+                total += 1;
+                sharp += (d > 90) as usize;
+            }
+        }
+        sharp as f64 / total.max(1) as f64
+    }
+
+    /// The extra room beside the core is furnished, not left as bare wall,
+    /// in every scene. Measured on the sparsest side there is — the study's
+    /// right, with a clock and a poster — 0.019; the same side with those
+    /// taken out, 0.006. Most sides score 0.05 to 0.17.
     #[test]
     fn extra_room_is_furnished() {
         for scene in Scene::ALL {
             for (w, h) in [(180usize, 88usize), (300, 70)] {
                 let canvas = scene.render(0, w, h);
                 let ox = (w - WIDTH) / 2;
-                let bright = |xs: std::ops::Range<usize>| {
-                    xs.flat_map(|x| (0..h).map(move |y| (x, y)))
-                        .filter(|&(x, y)| canvas.get(x, y).iter().max().is_some_and(|&c| c >= 0x90))
-                        .count()
-                };
-                let (left, right) = (bright(0..ox), bright(ox + WIDTH..w));
+                let (left, right) = (
+                    edge_density(&canvas, 0..ox),
+                    edge_density(&canvas, ox + WIDTH..w),
+                );
                 assert!(
-                    left >= 100 && right >= 100,
-                    "{scene:?} at {w}x{h}: {left} bright pixels left of the core, {right} right"
+                    left >= 0.012 && right >= 0.012,
+                    "{} at {w}x{h}: edge density {left:.3} left of the core, {right:.3} right",
+                    scene.name()
+                );
+            }
+        }
+    }
+
+    /// Every scene's subject — the cat, the cup, the barista, the passengers,
+    /// the dog, the writer's desk, the car — sits at least a third of the way
+    /// up a tall screen, like the cat and the car before them.
+    #[test]
+    fn every_subject_sits_at_least_a_third_up() {
+        type Origin = fn(&Canvas) -> (i32, i32);
+        let anchors: [(Scene, Origin, i32); 7] = [
+            (Scene::RainyDesk, super::desk::desk_origin, 39),
+            (Scene::CafeWindow, super::cafe_street::cafe_origin, 40),
+            (Scene::CoffeeBar, super::cafe::bar_origin, 44),
+            (Scene::NightTrain, super::train::train_origin, 44),
+            (Scene::SunsetFlat, super::flat::flat_origin, 47),
+            (Scene::NightStudy, super::study::study_origin, 38),
+            (Scene::SynthwaveDrive, super::drive::drive_origin, 52),
+        ];
+        assert_eq!(anchors.len(), Scene::ALL.len(), "every scene listed");
+        for (scene, origin, lowest) in anchors {
+            for (w, h) in [(180usize, 88usize), (110, 120), (200, 160)] {
+                let canvas = Canvas::new(w, h);
+                let (_, oy) = origin(&canvas);
+                let below = h as i32 - 1 - (oy + lowest);
+                assert!(
+                    below * 3 >= h as i32,
+                    "{} at {w}x{h}: {below} rows under the subject",
+                    scene.name()
                 );
             }
         }
@@ -578,7 +697,7 @@ mod test {
         let start = Scene::RainyDesk;
         let n = Scene::ALL.len() as i32;
         assert_eq!(start.turned(0), start);
-        assert_eq!(start.turned(1), Scene::SynthwaveDrive);
+        assert_eq!(start.turned(1), Scene::ALL[1]);
         assert_eq!(start.turned(n), start, "a full turn comes back");
         assert_eq!(start.turned(-1), start.turned(n - 1), "backwards wraps");
         let seen: std::collections::HashSet<_> = (0..n).map(|k| start.turned(k)).collect();
@@ -586,14 +705,28 @@ mod test {
     }
 
     #[test]
-    fn synthwave_names_get_the_drive() {
-        assert_eq!(Scene::for_words("Nightwave Plaza"), Scene::SynthwaveDrive);
-        assert_eq!(
-            Scene::for_words("Esoterica — Synthwave"),
-            Scene::SynthwaveDrive
-        );
-        assert_eq!(Scene::for_words("Lofi 24/7"), Scene::RainyDesk);
-        assert_eq!(Scene::for_words(""), Scene::RainyDesk);
+    fn the_music_picks_the_scene() {
+        for (text, scene) in [
+            ("Nightwave Plaza", Scene::SynthwaveDrive),
+            ("Esoterica — Synthwave", Scene::SynthwaveDrive),
+            ("Late Night Jazz Lounge", Scene::CafeWindow),
+            ("Morning Coffee Acoustic", Scene::CoffeeBar),
+            ("Ambient Journey", Scene::NightTrain),
+            ("Sunday Soul", Scene::SunsetFlat),
+            ("Piano for Study", Scene::NightStudy),
+            ("Lofi 24/7", Scene::RainyDesk),
+            ("", Scene::RainyDesk),
+        ] {
+            assert_eq!(Scene::for_words(text), scene, "{text:?}");
+        }
+        // Every scene can be reached by some word, and the default by none.
+        for scene in Scene::ALL {
+            let reachable = scene == Scene::RainyDesk
+                || KEYWORDS
+                    .iter()
+                    .any(|&(s, words)| s == scene && !words.is_empty());
+            assert!(reachable, "{} has no words", scene.name());
+        }
     }
 
     #[test]

@@ -112,7 +112,7 @@ pub(super) fn rainy_desk(c: &mut Canvas, frame: u64) {
     c.rect(0, desk, w, h - desk, WOOD_DARK);
     c.rect(0, desk, w, 3, WOOD);
     c.rect(0, desk, w, 1, WOOD_EDGE);
-    under_desk(c, ox, desk, w, h);
+    under_desk(c, ox, desk, w, h, true);
 
     // Desk things beside the core.
     if left >= 28 {
@@ -146,7 +146,7 @@ const APRON: i32 = 4;
 /// Laid out from whatever height is left. With too little, the space is
 /// all apron and wood, as the desk used to be; items that would not fit are
 /// left out rather than squashed.
-fn under_desk(c: &mut Canvas, ox: i32, desk: i32, w: i32, h: i32) {
+pub(super) fn under_desk(c: &mut Canvas, ox: i32, desk: i32, w: i32, h: i32, yarn: bool) {
     let apron_top = desk + 3;
     let space_top = apron_top + APRON;
     let room = h - space_top;
@@ -245,7 +245,7 @@ fn under_desk(c: &mut Canvas, ox: i32, desk: i32, w: i32, h: i32) {
     }
 
     // A basket of yarn: woven, three balls in it, knitting needles stuck in.
-    if floor - space_top >= 10 {
+    if yarn && floor - space_top >= 10 {
         let (bx, by) = (ox + 56, floor - 4);
         // Needles first, behind the balls, crossed and leaning out.
         for (x0, x1) in [(bx + 3, bx - 2), (bx + 9, bx + 14)] {
@@ -483,7 +483,7 @@ fn desk_core(c: &mut Canvas, frame: u64) {
 
 /// Two shelves on the wall between absolute columns `x0..x1`, filled with
 /// books, with a pothos trailing off the top one.
-fn wall_shelves(c: &mut Canvas, frame: u64, x0: i32, x1: i32, oy: i32) {
+pub(super) fn wall_shelves(c: &mut Canvas, frame: u64, x0: i32, x1: i32, oy: i32) {
     let palette = [
         0x7a3b45, 0x3b5a7a, 0xc79a3b, 0x4f6b4a, 0x8a5a9e, 0xb5603c, 0x2f4858, 0xd8cfc0,
     ];
@@ -527,7 +527,7 @@ fn wall_shelves(c: &mut Canvas, frame: u64, x0: i32, x1: i32, oy: i32) {
 
 /// A macramé hanger from the ceiling at absolute `x`, rows `top..bottom`,
 /// holding a pot whose vines spill over and sway.
-fn hanging_plant(c: &mut Canvas, frame: u64, x: i32, top: i32, bottom: i32) {
+pub(super) fn hanging_plant(c: &mut Canvas, frame: u64, x: i32, top: i32, bottom: i32) {
     let cord = rgb(0xc9b28a);
     let sway = (phase_at(frame, 1, 0.3) * TAU).sin() * 0.7;
     let px = x as f64 + sway;
@@ -578,7 +578,7 @@ fn hanging_plant(c: &mut Canvas, frame: u64, x: i32, top: i32, bottom: i32) {
 
 /// A wall clock centred at `(cx, cy)`, absolute. The second hand ticks round
 /// once per loop, in eight steps.
-fn clock(c: &mut Canvas, frame: u64, cx: i32, cy: i32) {
+pub(super) fn clock(c: &mut Canvas, frame: u64, cx: i32, cy: i32) {
     let (x, y) = (cx as f64 + 0.5, cy as f64 + 0.5);
     c.disc(x, y, 7.0, rgb(0x3a2b20));
     c.disc(x, y, 6.0, rgb(0xe8dcc4));
@@ -603,7 +603,7 @@ fn clock(c: &mut Canvas, frame: u64, cx: i32, cy: i32) {
 }
 
 /// A framed poster: a little sunset over the sea.
-fn poster(c: &mut Canvas, x: i32, y: i32) {
+pub(super) fn poster(c: &mut Canvas, x: i32, y: i32) {
     c.rect(x, y, 16, 20, rgb(0x2a2a2a));
     c.gradient(
         x + 1,
@@ -626,7 +626,7 @@ fn poster(c: &mut Canvas, x: i32, y: i32) {
 }
 
 /// A smaller frame: a pixel cat portrait, a nod to the one asleep on the desk.
-fn poster_small(c: &mut Canvas, x: i32, y: i32) {
+pub(super) fn poster_small(c: &mut Canvas, x: i32, y: i32) {
     c.rect(x, y, 11, 12, rgb(0x6b4632));
     c.rect(x + 1, y + 1, 9, 10, rgb(0xd8cfc0));
     let fur = rgb(0x3a3542);
@@ -638,7 +638,7 @@ fn poster_small(c: &mut Canvas, x: i32, y: i32) {
 }
 
 /// A small frame holding a pressed leaf, so the gallery is not all cats.
-fn leaf_print(c: &mut Canvas, x: i32, y: i32) {
+pub(super) fn leaf_print(c: &mut Canvas, x: i32, y: i32) {
     c.rect(x, y, 11, 12, rgb(0x2a2a2a));
     c.rect(x + 1, y + 1, 9, 10, rgb(0xe8dcc4));
     c.rect(x + 5, y + 3, 1, 7, rgb(0x3d6b3a));
@@ -658,7 +658,7 @@ fn leaf_print(c: &mut Canvas, x: i32, y: i32) {
 }
 
 /// Bulbs strung in shallow swags along absolute row `y`, twinkling.
-fn fairy_lights(c: &mut Canvas, frame: u64, x0: i32, x1: i32, y: i32) {
+pub(super) fn fairy_lights(c: &mut Canvas, frame: u64, x0: i32, x1: i32, y: i32) {
     let colors = [0xffd27a, 0xff7eb6, 0x7ee0d6, 0xffa75e];
     let span = 28;
     for x in x0..x1 {
