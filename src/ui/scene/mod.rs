@@ -683,6 +683,39 @@ mod test {
         }
     }
 
+    /// The pair at the café counter take turns: through a loop the bubble
+    /// shows over each of them for a good while, never both at once, with
+    /// pauses between.
+    #[test]
+    fn the_cafe_pair_take_turns_talking() {
+        let (mut left, mut right, mut quiet) = (0, 0, 0);
+        for frame in 0..FRAMES {
+            let canvas = Scene::CafeWindow.render(frame, WIDTH, HEIGHT);
+            let xs: Vec<usize> = (0..HEIGHT)
+                .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+                .filter(|&(x, y)| canvas.get(x, y) == super::cafe_street::BUBBLE)
+                .map(|(x, _)| x)
+                .collect();
+            match (xs.iter().min(), xs.iter().max()) {
+                (None, _) | (_, None) => quiet += 1,
+                // The pair sit at 20 and 40: a bubble is over one of them.
+                (Some(&lo), Some(&hi)) => {
+                    assert!(hi - lo < 12, "frame {frame}: two bubbles at once");
+                    if hi < 33 {
+                        left += 1;
+                    } else if lo > 30 {
+                        right += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            left >= 30 && right >= 30,
+            "turns: {left} left, {right} right"
+        );
+        assert!(quiet >= 10, "no pauses: {quiet} quiet frames");
+    }
+
     /// The wall reaches the top on a tall canvas: no row there is left black.
     #[test]
     fn the_wall_runs_to_the_ceiling() {

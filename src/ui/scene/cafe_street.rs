@@ -4,7 +4,7 @@
 
 use std::f64::consts::TAU;
 
-use super::parts::{look, rain, street, walker};
+use super::parts::{Look, look, rain, sprite, street, walker};
 use super::*;
 
 /// The scene's anchor. Its subject is the cup on the counter, whose base is
@@ -20,6 +20,11 @@ const GLASS_BOTTOM: i32 = 38;
 const LEDGE: i32 = 40;
 /// Window posts repeat this far apart, aligned to the core.
 const PANE: i32 = 48;
+/// Seats along the counter beyond the core come in bays this wide.
+const SEATS: i32 = 40;
+/// The speech bubbles' paper: a colour nothing else in the scene uses, so a
+/// test can find who is talking.
+pub(super) const BUBBLE: Rgb = rgb(0xfbf7ef);
 
 const POST: Rgb = rgb(0x3a2418);
 const POST_LIT: Rgb = rgb(0x5a3a26);
@@ -203,6 +208,49 @@ pub(super) fn cafe_street(c: &mut Canvas, frame: u64) {
         slot += 1;
     }
 
+    // People on stools along the window beyond the core, in bays counted
+    // out from its edges: pairs talking, someone on their phone, now and then
+    // empty stools — but never next to the core, so a typical screen always
+    // has company at the counter.
+    let seat_floor = floor.min(h);
+    let right_of_core = ox + WIDTH as i32;
+    for side in [-1i32, 1] {
+        let mut nth = 0;
+        loop {
+            let x = if side > 0 {
+                right_of_core + nth * SEATS
+            } else {
+                ox - (nth + 1) * SEATS
+            };
+            if (side > 0 && x > w) || (side < 0 && x + SEATS < 0) {
+                break;
+            }
+            let seed = hash_at(side * (nth + 1), 913);
+            // Next to the core: a pair two times in three, else a phone.
+            // Further out: pairs half the time, a phone a third, empty a sixth.
+            let roll = if nth == 0 { seed % 3 * 2 } else { seed % 6 };
+            if roll <= 2 {
+                conversation(c, frame, (x + 6, x + 24), ledge, seat_floor, seed, true);
+            } else if roll == 5 {
+                stool(c, x + 8, ledge, seat_floor);
+                stool(c, x + 24, ledge, seat_floor);
+            } else {
+                stool(c, x + 14, ledge, seat_floor);
+                let glow = 0.6 + 0.4 * wave(frame, 2, unit(seed));
+                let facing_right = (seed / 6).is_multiple_of(2);
+                sitter(
+                    c,
+                    x + 14,
+                    ledge,
+                    look(seed),
+                    facing_right,
+                    Pose::Phone(glow),
+                );
+            }
+            nth += 1;
+        }
+    }
+
     // The core's counter: a croissant, the latte, a notebook, a plant.
     c.origin(ox, oy);
     croissant(c, 10, LEDGE);
@@ -219,6 +267,216 @@ pub(super) fn cafe_street(c: &mut Canvas, frame: u64) {
                 rgb(0x4f8a4b)
             },
         );
+    }
+
+    // A pair talking either side of the latte, their backs to the room.
+    c.origin(0, 0);
+    conversation(
+        c,
+        frame,
+        (ox + 20, ox + 40),
+        ledge,
+        seat_floor,
+        0x5eed,
+        false,
+    );
+}
+
+/// What a sitter is doing.
+#[derive(Clone, Copy, PartialEq)]
+enum Pose {
+    /// Talking: mouth open or shut this frame, hand up or down.
+    Talking { mouth: bool, gesture: bool },
+    /// Listening, nodding now and then.
+    Listening { nod: bool },
+    /// Looking at a phone, its screen this bright.
+    Phone(f64),
+}
+
+/// Two people on stools at `xs`, facing each other across the counter and
+/// taking turns: four turns a loop, the speaker's bubble up for most of
+/// theirs, their mouth and hand moving; the listener nodding.
+fn conversation(
+    c: &mut Canvas,
+    frame: u64,
+    (xa, xb): (i32, i32),
+    ledge: i32,
+    floor: i32,
+    seed: u64,
+    cups: bool,
+) {
+    let (a, b) = (look(seed), look(seed.wrapping_add(17)));
+    stool(c, xa, ledge, floor);
+    stool(c, xb, ledge, floor);
+    // Where in the conversation we are: which turn, and how far into it.
+    let at = phase_at(frame, 1, unit(seed)) * 4.0;
+    let turn = at as u64;
+    let into = at.fract();
+    let a_talks = turn.is_multiple_of(2);
+    let speaking = into < 0.75;
+    let mouth = speaking && phase(frame, 20) < 0.5;
+    let gesture = speaking && phase_at(frame, 5, unit(seed.wrapping_add(1))) < 0.4;
+    let nod = phase_at(frame, 4, unit(seed.wrapping_add(2))) < 0.12;
+    let talking = Pose::Talking { mouth, gesture };
+    let listening = Pose::Listening { nod };
+    sitter(
+        c,
+        xa,
+        ledge,
+        a,
+        true,
+        if a_talks { talking } else { listening },
+    );
+    sitter(
+        c,
+        xb,
+        ledge,
+        b,
+        false,
+        if a_talks { listening } else { talking },
+    );
+    // Their cups on the counter between them — unless they share one.
+    if cups {
+        c.rect(xa + 9, ledge - 3, 3, 3, rgb(0xf3eadc));
+        c.rect(xb - 4, ledge - 3, 3, 3, rgb(0xf3eadc));
+    }
+    if speaking {
+        let x = if a_talks { xa } else { xb };
+        let kind = hash(seed.wrapping_add(turn)) % 6;
+        bubble(c, frame, x + 3, ledge - 16, kind, a_talks);
+    }
+}
+
+/// Someone sitting on a stool at the counter, side on, `x` their left edge,
+/// facing right or left. Their head is over the glass, their back to us.
+fn sitter(c: &mut Canvas, x: i32, ledge: i32, who: Look, facing_right: bool, pose: Pose) {
+    let top = ledge - 9;
+    let palette = [
+        ('h', who.hair),
+        ('f', who.skin),
+        ('e', rgb(0x2a1d18)),
+        ('c', who.coat),
+        ('t', who.trousers),
+        ('s', rgb(0x1a1a1a)),
+    ];
+    // Mirror a column for someone facing left.
+    let fx = |dx: i32| if facing_right { x + dx } else { x + 7 - dx };
+    let nod = matches!(pose, Pose::Listening { nod: true }) as i32;
+    sprite(
+        c,
+        x,
+        top + nod,
+        &["..hhh...", ".hhhhf..", ".hhhef..", "..hfff..", "...ff..."],
+        &palette,
+        !facing_right,
+    );
+    sprite(
+        c,
+        x,
+        top + 5,
+        &[
+            "..cccc..", ".cccccc.", ".cccccc.", ".ccccc..", ".ccccc..", ".ccccc..", ".cccccc.",
+            ".tttttt.", ".....tt.", ".....tt.", ".....tt.", ".....tt.", ".....tt.", "....sss.",
+        ],
+        &palette,
+        !facing_right,
+    );
+    let sleeve = mix(who.coat, rgb(0x000000), 0.2);
+    let shoulder = (fx(4) as f64, (ledge - 3) as f64);
+    match pose {
+        Pose::Talking { mouth, gesture } => {
+            if mouth {
+                c.set(fx(5), top + 3, rgb(0x5a2a2a));
+            }
+            // The hand up mid-sentence, or resting on the counter.
+            let hand = if gesture {
+                (fx(7), ledge - 6)
+            } else {
+                (fx(7), ledge - 1)
+            };
+            c.line(shoulder, (hand.0 as f64, hand.1 as f64), sleeve);
+            c.set(hand.0, hand.1, who.skin);
+        }
+        Pose::Listening { .. } => {
+            c.line(shoulder, (fx(6) as f64, (ledge - 1) as f64), sleeve);
+            c.set(fx(7), ledge - 1, who.skin);
+        }
+        Pose::Phone(glow) => {
+            c.line(shoulder, (fx(6) as f64, (ledge - 5) as f64), sleeve);
+            c.set(fx(7), ledge - 5, who.skin);
+            let screen = mix(rgb(0x6fa8ff), rgb(0xe0f0ff), glow);
+            c.rect(fx(7).min(fx(8)), ledge - 7, 1, 2, screen);
+            c.glow(
+                fx(6) as f64 + 0.5,
+                (top + 2) as f64,
+                4.0,
+                rgb(0x9ac4ff),
+                0.3 * glow,
+            );
+        }
+    }
+}
+
+/// A bar stool: a round wooden seat on a pole, a foot ring, a base.
+fn stool(c: &mut Canvas, x: i32, ledge: i32, floor: i32) {
+    let seat = ledge + 4;
+    c.rect(x, seat, 8, 1, rgb(0x7a4e33));
+    c.rect(x + 1, seat + 1, 6, 1, rgb(0x4a2f22));
+    c.rect(x + 3, seat + 2, 2, (floor - seat - 2).max(0), rgb(0x2a2a30));
+    c.rect(x + 1, ledge + 10, 6, 1, rgb(0x8a8a9a));
+    if floor - 1 > ledge + 10 {
+        c.rect(x + 1, floor - 1, 6, 1, rgb(0x2a2a30));
+    }
+}
+
+/// A speech bubble centred over `x`, its top at `y`: dots that come and go
+/// as the sentence goes on, or now and then a heart or a note. The tail
+/// points down toward the speaker.
+fn bubble(c: &mut Canvas, frame: u64, x: i32, y: i32, kind: u64, tail_right: bool) {
+    let (left, width, height) = (x - 4, 9, 6);
+    c.rect(left + 1, y, width - 2, height, BUBBLE);
+    c.rect(left, y + 1, width, height - 2, BUBBLE);
+    let tail = if tail_right {
+        left + 2
+    } else {
+        left + width - 3
+    };
+    c.set(tail, y + height, BUBBLE);
+    let ink = rgb(0x4a4a5a);
+    match kind {
+        4 => {
+            // A heart.
+            for (dx, dy) in [
+                (2, 1),
+                (3, 1),
+                (5, 1),
+                (6, 1),
+                (2, 2),
+                (3, 2),
+                (4, 2),
+                (5, 2),
+                (6, 2),
+                (3, 3),
+                (4, 3),
+                (5, 3),
+                (4, 4),
+            ] {
+                c.set(left + dx, y + dy, rgb(0xd1495b));
+            }
+        }
+        5 => {
+            // A note, as if humming the song.
+            c.rect(left + 5, y + 1, 1, 3, ink);
+            c.rect(left + 3, y + 3, 2, 2, ink);
+            c.set(left + 6, y + 1, ink);
+        }
+        _ => {
+            // Dots, one to three, as the sentence goes on.
+            let dots = 1 + (phase(frame, 8) * 3.0) as i32;
+            for k in 0..dots {
+                c.set(left + 2 + k * 2, y + 3, ink);
+            }
+        }
     }
 }
 
