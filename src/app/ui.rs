@@ -75,9 +75,22 @@ pub fn draw(
 fn draw_scene(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     use crate::ui::scene::{Scene, SceneWidget, current_frame};
 
-    // The music picks the scene; ← and → turn on from there.
-    let scene =
-        Scene::for_track(store.state().player.current_track()).turned(store.state().scene_turn);
+    // The music picks the scene, from its title, artist and album; ← and →
+    // turn on from there.
+    let words = store
+        .state()
+        .player
+        .current_track()
+        .map(|t| {
+            [Some(&t.title), t.artist.as_ref(), t.album.as_ref()]
+                .into_iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    let scene = Scene::for_words(&words).turned(store.state().scene_turn);
     let area = ctx.area();
     ctx.frame()
         .render_widget(SceneWidget::new(scene, current_frame()), area);
