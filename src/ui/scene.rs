@@ -441,7 +441,7 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
 const APRON: i32 = 4;
 
 /// Below the desktop: the apron with a drawer, legs, the back wall in shadow,
-/// a floor with a rug, and a chair and a basket of yarn on it.
+/// a floor with a rug, and a basket of yarn on it.
 ///
 /// Laid out from whatever height is left. With too little, the space is
 /// all apron and wood, as the desk used to be; items that would not fit are
@@ -583,28 +583,6 @@ fn under_desk(c: &mut Canvas, ox: i32, desk: i32, w: i32, h: i32) {
         }
         c.rect(bx - 1, by, 17, 1, rgb(0xc9a46e));
         c.rect(bx, by + 4, 15, 1, rgb(0x6b4e2c));
-    }
-
-    // A wooden chair in profile, pushed in, facing the desk: a tall back
-    // post, the seat, a front leg and a brace between them. In profile it
-    // reads as a chair even a few pixels high, which a front view did not.
-    let seat = floor - 6;
-    let back = (seat - space_top - 1).min(10);
-    if back >= 4 {
-        let (cx, wood, dark, light) = (ox + 30, rgb(0x8a5a3c), rgb(0x5c3b28), rgb(0xa06c4a));
-        let back_top = seat - back;
-        // Back post, with a slight backward lean at the top.
-        c.rect(cx, back_top + 2, 2, floor + 1 - (back_top + 2), wood);
-        c.rect(cx, back_top + 2, 1, floor + 1 - (back_top + 2), light);
-        c.rect(cx - 1, back_top, 2, 2, wood);
-        // A backrest slat, seen edge-on.
-        c.rect(cx + 2, back_top + 2, 1, (back / 2).max(2), dark);
-        // Seat.
-        c.rect(cx, seat, 13, 2, wood);
-        c.rect(cx, seat, 13, 1, light);
-        // Front leg and the brace.
-        c.rect(cx + 11, seat + 2, 2, floor + 1 - (seat + 2), dark);
-        c.rect(cx + 2, floor - 2, 9, 1, dark);
     }
 }
 
@@ -1583,13 +1561,12 @@ mod test {
         }
     }
 
-    /// Under the desk is a room, not more desk: a floor along the bottom, the
-    /// rug on it, and the chair in front of the shadowed wall.
+    /// Under the desk is a room, not more desk: a floor along the bottom with
+    /// the rug on it.
     #[test]
     fn there_is_a_room_under_the_desk() {
         for (w, h) in [(180usize, 88usize), (110, 120), (300, 70)] {
             let canvas = Scene::RainyDesk.render(0, w, h);
-            let ox = (w - WIDTH) / 2;
             let bottom: Vec<_> = (0..w).map(|x| canvas.get(x, h - 2)).collect();
             assert!(
                 bottom.contains(&rgb(0x7a2e43)) || bottom.contains(&rgb(0xc46a80)),
@@ -1599,9 +1576,6 @@ mod test {
                 !bottom.iter().all(|&p| p == rgb(0x4a2f22)),
                 "{w}x{h}: the bottom is still desk"
             );
-            let chair =
-                (0..h).any(|y| (ox + 29..ox + 46).any(|x| canvas.get(x, y) == rgb(0x8a5a3c)));
-            assert!(chair, "{w}x{h}: no chair");
         }
     }
 
