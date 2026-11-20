@@ -6,6 +6,7 @@
 //! cargo run --example scenes -- train        # start on a scene, by name or number
 //! cargo run --example scenes -- --png out    # write frames as PNGs instead
 //! cargo run --example scenes -- --png out 300x70
+//! cargo run --example scenes -- --png out 160x90 --zoom 10 --frames 0,40,80
 //! ```
 //!
 //! Resize the terminal to see a scene recompose itself for the new shape.
@@ -32,7 +33,15 @@ fn main() -> std::io::Result<()> {
     if args.first().map(String::as_str) == Some("--png") {
         let dir = args.get(1).map(String::as_str).unwrap_or("scenes");
         let size = args.get(2).and_then(|s| parse_size(s)).unwrap_or((180, 88));
-        return write_pngs(dir, size);
+        let option = |name: &str| {
+            let at = args.iter().position(|a| a == name)?;
+            args.get(at + 1).cloned()
+        };
+        let zoom = option("--zoom").and_then(|z| z.parse().ok());
+        let frames = option("--frames")
+            .map(|f| f.split(',').filter_map(|n| n.parse().ok()).collect())
+            .unwrap_or_else(|| vec![0, FRAMES / 3, FRAMES * 2 / 3]);
+        return write_pngs(dir, size, zoom, &frames);
     }
     let start = args.first().map_or(0, |wanted| find(wanted));
     run(start)
@@ -121,13 +130,19 @@ fn run(start: usize) -> std::io::Result<()> {
     result
 }
 
-/// Writes three frames of every scene at `size` canvas pixels, enlarged for
-/// looking at, into `dir`.
-fn write_pngs(dir: &str, (w, h): (usize, usize)) -> std::io::Result<()> {
+/// Writes `frames` of every scene at `size` canvas pixels into `dir`, each
+/// pixel a `zoom`-sized block (by default, as large as keeps the image about
+/// 1200 wide).
+fn write_pngs(
+    dir: &str,
+    (w, h): (usize, usize),
+    zoom: Option<usize>,
+    frames: &[u64],
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let zoom = (1200 / w.max(1)).max(1);
+    let zoom = zoom.unwrap_or((1200 / w.max(1)).max(1)).max(1);
     for scene in Scene::ALL {
-        for frame in [0, FRAMES / 3, FRAMES * 2 / 3] {
+        for &frame in frames {
             let canvas = scene.render(frame, w, h);
             let image = image::RgbImage::from_fn((w * zoom) as u32, (h * zoom) as u32, |x, y| {
                 image::Rgb(canvas.get(x as usize / zoom, y as usize / zoom))
