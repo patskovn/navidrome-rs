@@ -63,6 +63,7 @@ fn track_from(value: Child) -> Track {
         track_no: value.track,
         duration: value.duration,
         suffix: value.suffix,
+        cover_art: value.cover_art,
     }
 }
 
@@ -266,6 +267,7 @@ mod test {
             "track": 1,
             "duration": 545,
             "suffix": "flac",
+            "coverArt": "al-7",
         });
         let track = track_from(serde_json::from_value::<Child>(json).unwrap());
 
@@ -273,6 +275,7 @@ mod test {
         assert_eq!(track.duration_display(), "9:05");
         assert_eq!(track.suffix.as_deref(), Some("flac"));
         assert_eq!(track.track_no, Some(1));
+        assert_eq!(track.cover_art.as_deref(), Some("al-7"));
     }
 
     #[test]

@@ -3,11 +3,13 @@
 mod app;
 mod audio;
 mod config;
+mod nowplaying;
 mod subsonic;
 mod ui;
 
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use crossterm::event::DisableBracketedPaste;
@@ -34,6 +36,9 @@ use crate::app::entry::State;
 use crate::audio::AudioEngine;
 use crate::audio::TrackCache;
 use crate::config::ServerConfig;
+use crate::nowplaying::NowPlaying;
+use crate::nowplaying::Remote;
+use crate::nowplaying::Snapshot;
 use crate::subsonic::Library;
 use crate::subsonic::OpenSubsonicLibrary;
 use crate::subsonic::SharedLibrary;
@@ -75,6 +80,31 @@ fn is_actionable(event: &Event) -> bool {
         | Event::FocusLost => true,
         Event::Mouse(_) => false,
     }
+}
+
+/// How long a Control Centre press may sit before the app notices.
+///
+/// Remote commands are delivered on the main thread's run loop, which the event
+/// loop only reaches between terminal events — and an idle app has none. This
+/// is how often it wakes to look, and it ticks only while there is something on
+/// the tile to press a button on.
+const REMOTE_POLL: Duration = Duration::from_millis(200);
+
+/// Turns a system media button into an app action.
+///
+/// Play and pause arrive as separate commands from hardware that has separate
+/// buttons, so both are honoured — but only when they would change something.
+/// A stray "play" while already playing must not toggle the track off.
+fn remote_action(remote: Remote, player: &app::player::State) -> Option<Action> {
+    let action = match remote {
+        Remote::Toggle => app::player::Action::TogglePause,
+        Remote::Play if !player.is_playing => app::player::Action::TogglePause,
+        Remote::Pause if player.is_playing => app::player::Action::TogglePause,
+        Remote::Play | Remote::Pause => return None,
+        Remote::Next => app::player::Action::Next,
+        Remote::Previous => app::player::Action::Previous,
+    };
+    Some(Action::Player(action))
 }
 
 /// Builds a library client from saved credentials.
@@ -160,7 +190,7 @@ where
 
     let store = tca::Store::new(
         Feature {
-            library,
+            library: library.clone(),
             audio: audio.clone(),
         },
         State::restored(signed_in.then_some(()).and(saved)),
@@ -184,14 +214,36 @@ where
     let mut redraws = store.observe();
     let mut terminal_events = crossterm::event::EventStream::new();
 
+    // The desktop's own transport. Registered from this thread on purpose:
+    // remote commands are only ever delivered here.
+    let (mut now_playing, mut remotes) = NowPlaying::start();
+    // Artwork for the tile, fetched off the loop and handed back as bytes: the
+    // platform image has to be built on this thread, like everything else
+    // Now Playing touches.
+    let (artwork_sender, mut artworks) = tokio::sync::mpsc::unbounded_channel();
+
     // Draw once up front. The loop below only paints on a store notification,
     // and a signed-out app sends no actions until the user presses a key —
     // which would otherwise leave a blank terminal on launch.
     terminal.draw(|f| app::ui::draw(f, store.clone(), &tap, &mut spectrum))?;
 
     loop {
+        // Nothing else drains this thread's run loop, and that is where the
+        // system hands over Control Centre presses and media keys.
+        now_playing.pump();
+
         let terminal_event = terminal_events.next().fuse();
         let redraw = redraws.changed().fuse();
+        // Only worth waking for while there is a tile to press a button on; an
+        // idle app should still do nothing at all.
+        let poll = async {
+            match now_playing.is_published() {
+                true => tokio::time::sleep(REMOTE_POLL).await,
+                false => std::future::pending().await,
+            }
+        }
+        .fuse();
+
         tokio::select! {
             changed = redraw => {
                 // `watch` coalesces and never lags, so the only other outcome
@@ -200,7 +252,31 @@ where
                     break;
                 }
                 terminal.draw(|f| app::ui::draw(f, store.clone(), &tap, &mut spectrum))?;
+                if let Some(cover_art) = now_playing.update(Snapshot::of(&store.state().player)) {
+                    let library = library.clone();
+                    let artwork_sender = artwork_sender.clone();
+                    tokio::spawn(async move {
+                        match library.cover_art(&cover_art).await {
+                            Ok(bytes) => {
+                                let _ = artwork_sender.send((cover_art, bytes));
+                            }
+                            // The tile is still useful without a picture.
+                            Err(err) => log::warn!("no artwork for the tile: {err:#}"),
+                        }
+                    });
+                }
             }
+            Some((cover_art, bytes)) = artworks.recv() => {
+                now_playing.set_artwork(&cover_art, &bytes);
+            }
+            remote = remotes.recv() => {
+                if let Some(remote) = remote
+                    && let Some(action) = remote_action(remote, &store.state().player)
+                {
+                    store.send(action);
+                }
+            }
+            () = poll => {}
             maybe_event = terminal_event => {
                 match maybe_event {
                     Some(Ok(event)) if is_actionable(&event) => {
@@ -214,6 +290,9 @@ where
         }
     }
 
+    // The tile outlives the process otherwise, offering buttons that reach a
+    // program that is no longer there.
+    now_playing.update(None);
     audio.send(audio::Command::Shutdown);
     Ok(())
 }

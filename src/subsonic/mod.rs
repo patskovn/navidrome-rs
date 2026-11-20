@@ -52,6 +52,8 @@ pub struct Track {
     pub duration: Option<i64>,
     /// File extension of the original, used to name the cache entry.
     pub suffix: Option<String>,
+    /// Id to fetch artwork with; not the image itself. Usually the album's.
+    pub cover_art: Option<String>,
 }
 
 impl Track {

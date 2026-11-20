@@ -24,3 +24,14 @@ stream-download = "0.24.2"
 tca-rs = "0.2"
 tokio = { version = "1.53.1", features = ["full"] }
 tui-textarea = { version = "0.8", package = "ratatui-textarea" }
+
+# Now Playing: the Control Centre tile, media keys, headset buttons. macOS only
+# for now; the module has a no-op backend everywhere else.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage"] }
+objc2-core-foundation = "0.3"
+objc2-foundation = "0.3"
+objc2-media-player = "0.3"
