@@ -105,6 +105,8 @@ pub struct DevicePicker {
 #[derive(Debug, PartialEq, Clone)]
 pub struct State {
     pub help: bool,
+    /// Whether the pixel-art scene fills the screen in place of the tabs.
+    pub scene: bool,
     pub picker: Option<DevicePicker>,
     pub session: Session,
     pub player: player::State,
@@ -121,6 +123,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             help: false,
+            scene: false,
             picker: None,
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
@@ -206,6 +209,8 @@ pub enum Action {
     TogglePicker,
     /// Open or close the keybinding help.
     ToggleHelp,
+    /// Show or hide the fullscreen pixel-art scene.
+    ToggleScene,
     Quit,
 }
 
@@ -351,8 +356,12 @@ impl Reducer for Feature {
                 )
                 .on_delegate(
                     case!(player::Action::Delegated),
-                    |_s: &mut State, d| match d {
-                        player::Delegated::PlaybackActive(active) => Self::tick_effect(active),
+                    |s: &mut State, d| match d {
+                        // The scene animates on the same tick, so it keeps the
+                        // tick alive even when the music stops.
+                        player::Delegated::PlaybackActive(active) => {
+                            Self::tick_effect(active || s.scene)
+                        }
                     },
                 ),
             )
@@ -387,6 +396,13 @@ impl Reducer for Feature {
                 Action::ToggleHelp => {
                     state.help = !state.help;
                     Effect::none()
+                }
+
+                Action::ToggleScene => {
+                    state.scene = !state.scene;
+                    // The tick is the scene's frame rate. Closing it stops the
+                    // tick only if nothing is playing to need it.
+                    Self::tick_effect(state.scene || state.player.is_playing)
                 }
 
                 Action::TogglePicker => {
@@ -430,6 +446,9 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
 
     // A paste is text, and only the station form takes text as a whole.
     if let Event::Paste(_) = &event {
+        if state.scene {
+            return Effect::none();
+        }
         return match state.library().map(|l| (l.tab, l.radios.takes_text())) {
             Some((Tab::Radios, true)) => Effect::send(Action::Radios(radios::Action::Event(event))),
             _ => Effect::none(),
@@ -491,6 +510,21 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
         };
     }
 
+    // Ctrl-V shows the scene from anywhere, a text field included; a bare `v`
+    // does too, below, wherever letters are not text.
+    if key.code == KeyCode::Char('v') && key.modifiers == KeyModifiers::CONTROL {
+        return Effect::send(Action::ToggleScene);
+    }
+    // The scene covers the tabs, so their keys have nowhere to go. Transport,
+    // help, the output picker and quit still work below.
+    if state.scene {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('v') => return Effect::send(Action::ToggleScene),
+            KeyCode::Tab => return Effect::none(),
+            _ => {}
+        }
+    }
+
     // Tab always switches tabs, even from the search field.
     if key.code == KeyCode::Tab {
         let sounding = state.player.current;
@@ -527,10 +561,12 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     }
 
     // Everything else is text while the search field has focus: a bare `q` is
-    // a search term, not quit.
-    if !state.search_focused() {
+    // a search term, not quit. Under the scene no field is visible, so single
+    // keys are commands there.
+    if !state.search_focused() || state.scene {
         match key.code {
             KeyCode::Char('q') => return Effect::send(Action::Quit),
+            KeyCode::Char('v') => return Effect::send(Action::ToggleScene),
             KeyCode::Char(' ') => {
                 return Effect::send(Action::Player(player::Action::TogglePause));
             }
@@ -544,6 +580,10 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             }
             _ => {}
         }
+    }
+
+    if state.scene {
+        return Effect::none();
     }
 
     match state.library().map(|l| l.tab) {
@@ -866,6 +906,87 @@ mod test {
         store.settle();
         assert!(radio_form(&store).is_none());
         assert_eq!(store.state().player.current, Some(0), "the song plays on");
+    }
+
+    fn scene_open(store: &TestStore<Feature>) -> bool {
+        store.state().scene
+    }
+
+    /// `v` is a letter while a field has the keyboard; Ctrl-V works anyway.
+    #[tokio::test]
+    async fn the_scene_opens_with_ctrl_v_even_from_a_field() {
+        let mut store = signed_in_store();
+        assert!(store.state().search_focused());
+
+        store.send(Action::Event(key(KeyCode::Char('v'))), |_| {});
+        store.settle();
+        assert!(!scene_open(&store), "a plain v in the field is text");
+        assert_eq!(store.state().library().unwrap().albums.query, "v");
+
+        store.send(Action::Event(ctrl(KeyCode::Char('v'))), |_| {});
+        store.settle();
+        assert!(scene_open(&store));
+    }
+
+    #[tokio::test]
+    async fn a_bare_v_toggles_the_scene_outside_a_field() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(key(KeyCode::Down)), |_| {});
+        store.settle();
+        assert!(!store.state().search_focused());
+
+        store.send(Action::Event(key(KeyCode::Char('v'))), |_| {});
+        store.settle();
+        assert!(scene_open(&store));
+        store.send(Action::Event(key(KeyCode::Char('v'))), |_| {});
+        store.settle();
+        assert!(!scene_open(&store), "v again closes it");
+    }
+
+    /// Under the scene, keys meant for the hidden tab go nowhere — nothing is
+    /// typed into a search you cannot see, and Tab does not move it.
+    #[tokio::test]
+    async fn the_scene_swallows_tab_keys_and_closes_on_escape() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(ctrl(KeyCode::Char('v'))), |_| {});
+        store.settle();
+
+        for code in [
+            KeyCode::Char('x'),
+            KeyCode::Tab,
+            KeyCode::Down,
+            KeyCode::Backspace,
+        ] {
+            store.send(Action::Event(key(code)), |_| {});
+            store.settle();
+        }
+        let library = store.state().library().unwrap();
+        assert_eq!(library.albums.query, "", "nothing typed underneath");
+        assert_eq!(library.tab, Tab::Albums, "Tab did nothing");
+        assert!(scene_open(&store));
+
+        store.send(Action::Event(Event::Paste("hidden".into())), |_| {});
+        store.settle();
+
+        store.send(Action::Event(key(KeyCode::Esc)), |_| {});
+        store.settle();
+        assert!(!scene_open(&store), "Esc leaves the scene");
+    }
+
+    /// Transport still works under the scene, and `?` still helps.
+    #[tokio::test]
+    async fn the_scene_keeps_transport_and_help() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(ctrl(KeyCode::Char('v'))), |_| {});
+        store.settle();
+
+        store.send(Action::Event(key(KeyCode::Char('-'))), |_| {});
+        store.settle();
+        assert!(store.state().player.volume < 1.0, "volume went down");
+
+        store.send(Action::Event(key(KeyCode::Char('?'))), |_| {});
+        store.settle();
+        assert!(store.state().help);
     }
 
     /// The search field owns the keyboard on arrival, so single-key transport

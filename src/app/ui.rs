@@ -50,7 +50,11 @@ pub fn draw(
     let rows = Layout::vertical([Constraint::Fill(1), Constraint::Length(PLAYER_HEIGHT)])
         .split(ctx.area());
 
-    draw_active_tab(&mut ctx.with_area(rows[0]), &store);
+    if store.state().scene {
+        draw_scene(&mut ctx.with_area(rows[0]), &store);
+    } else {
+        draw_active_tab(&mut ctx.with_area(rows[0]), &store);
+    }
     draw_player(&mut ctx.with_area(rows[1]), &store, tap, spectrum);
 
     // Drawn last so it sits above the tab; this is what the ported modal queue
@@ -65,6 +69,16 @@ pub fn draw(
     }
 
     ctx.flush_modals();
+}
+
+/// The fullscreen pixel-art scene, chosen by what is playing.
+fn draw_scene(ctx: &mut DrawingContext, store: &Store<State, Action>) {
+    use crate::ui::scene::{Scene, SceneWidget, current_frame};
+
+    let scene = Scene::for_track(store.state().player.current_track());
+    let canvas = scene.render(current_frame());
+    let area = ctx.area();
+    ctx.frame().render_widget(SceneWidget::new(&canvas), area);
 }
 
 fn draw_sign_in(ctx: &mut DrawingContext, store: &Store<State, Action>) {
@@ -472,6 +486,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("+ -", "volume"),
         ("", ""),
         ("Ctrl-O", "choose an audio output"),
+        ("v Ctrl-V", "the pixel-art scene, fullscreen · Esc leaves"),
         ("?", "this help"),
         ("q", "quit"),
         ("Ctrl-C", "quit, even while typing"),
@@ -582,6 +597,73 @@ mod tests {
                     .collect()
             })
             .collect()
+    }
+
+    /// Renders the whole app with the scene open over `title` playing, sized
+    /// so the scene draws at exactly 1×.
+    fn scene_screen(title: &str) -> ratatui::buffer::Buffer {
+        use std::sync::Arc;
+
+        use crate::app::entry::{Feature, Session};
+        use crate::audio::{AudioEngine, TrackCache};
+        use crate::subsonic::{SwappableLibrary, Track, fake::FakeLibrary};
+        use crate::ui::scene::{HEIGHT, WIDTH};
+
+        let dir = std::env::temp_dir().join("navidrome-scene-render");
+        let cache = Arc::new(TrackCache::new(&dir, 1024).expect("cache"));
+        let (audio, _events) = AudioEngine::start(cache);
+        let tap = audio.tap().clone();
+        let store = tca::Store::new(
+            Feature {
+                library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
+                audio,
+                probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
+                directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
+            },
+            State {
+                session: Session::SignedIn(Box::default()),
+                scene: true,
+                player: crate::app::player::State {
+                    queue: vec![Track {
+                        title: title.into(),
+                        ..Default::default()
+                    }],
+                    current: Some(0),
+                    ..crate::app::player::State::new()
+                },
+                ..Default::default()
+            },
+        );
+
+        let mut spectrum = Spectrum::new();
+        let (w, h) = (WIDTH as u16, (HEIGHT / 2) as u16 + PLAYER_HEIGHT);
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test backend");
+        terminal
+            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .expect("draw");
+        terminal.backend().buffer().clone()
+    }
+
+    /// The scene replaces the tabs entirely, and picks itself from what is
+    /// playing: the desk's window frame is a fixed pixel, absent from the
+    /// drive.
+    #[tokio::test]
+    async fn the_scene_fills_the_screen_and_follows_the_music() {
+        let frame_wood = ratatui::style::Color::Rgb(0x4a, 0x33, 0x28);
+        // Cell row 1 holds pixel rows 2 and 3; row 3 is the window frame.
+        let desk = scene_screen("Lofi 24/7");
+        assert_eq!(desk[(10, 1)].symbol(), "▀");
+        assert_eq!(desk[(10, 1)].bg, frame_wood, "the rainy desk's window");
+        let text: String = (0..desk.area.width)
+            .map(|x| desk[(x, 0)].symbol())
+            .collect();
+        assert!(
+            !text.contains("Albums"),
+            "no tab strip under the scene: {text}"
+        );
+
+        let drive = scene_screen("Nightwave Plaza");
+        assert_ne!(drive[(10, 1)].bg, frame_wood, "synthwave gets the drive");
     }
 
     /// Regression: the row reserved too few columns for its furniture, so a

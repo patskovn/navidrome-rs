@@ -16,3 +16,4 @@ pub mod visualizer;
 pub use drawing_context::DrawingContext;
 pub use drawing_context::ModalQueue;
 pub mod cover;
+pub mod scene;

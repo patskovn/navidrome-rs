@@ -259,6 +259,15 @@ Reducers are testable because the server sits behind the `Library` trait; use
   previewing — the search stays open underneath, so Esc returns to the
   results. `cargo test real_directory -- --ignored` queries the real
   directory.
+- **The pixel-art scene runs on frame numbers, not seconds.** `ui/scene.rs`
+  paints each scene as a pure function of a frame (20 fps, 160 per loop), and
+  every moving part turns a whole number of times per loop with phase taken in
+  integers (`phase()`), so the loop is seamless by construction;
+  `a_scene_loops_exactly` holds new parts to it. Scenes are original art —
+  keep them that way rather than recreating anyone's characters. The scene
+  animates on the visualiser tick, so while it is open the tick stays alive
+  even with nothing playing. `NAVIDROME_RS_SCENE_DIR=… cargo test
+  preview_scenes -- --ignored` writes frames as PNGs for looking at.
 - **The station form owns the keyboard, `?` included.** Stream URLs carry
   query strings, so the help key is text there. A preview is stopped only if
   it is still what is playing (`radios::PREVIEW_ID`): the user may have
