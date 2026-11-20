@@ -27,6 +27,11 @@ const STEEL: Rgb = rgb(0xb8bccb);
 const STEEL_DARK: Rgb = rgb(0x6e7286);
 const CUSHION: Rgb = rgb(0x8a3a4a);
 const CUSHION_LIT: Rgb = rgb(0xa8505e);
+/// The band on the conductor's cap: a colour nothing else uses, so a test
+/// can follow them down the carriage.
+pub(super) const CAP_BAND: Rgb = rgb(0xe0b040);
+/// The silhouettes of the people on our side of the carriage.
+pub(super) const SHADOW: Rgb = rgb(0x0b0d16);
 
 pub(super) fn night_train(c: &mut Canvas, frame: u64) {
     let (ox, oy) = train_origin(c);
@@ -160,6 +165,17 @@ pub(super) fn night_train(c: &mut Canvas, frame: u64) {
             c.blend(x, floor + 1 + dy, CUSHION, 0.12 - dy as f64 * 0.025);
         }
     }
+    // Lamps going by outside throw light across the floor: slanted patches
+    // sliding the way the country does, 3 px a frame, whole turns a loop.
+    for y in floor..h {
+        for x in 0..w {
+            let u = scrolled(x + (y - floor), 120, frame, 4);
+            if u < 14 {
+                let peak = 1.0 - (u as f64 - 7.0).abs() / 7.0;
+                c.blend(x, y, rgb(0xffe8b0), 0.17 * peak);
+            }
+        }
+    }
     if h - floor > 6 {
         c.rect(0, floor + 4, w, 1, rgb(0xd9b441));
     }
@@ -182,6 +198,270 @@ pub(super) fn night_train(c: &mut Canvas, frame: u64) {
         c.rect(pole, rail, 2, h - rail, STEEL);
         c.rect(pole, rail, 1, h - rail, rgb(0xe8eaf2));
         pole += BAY;
+    }
+
+    // Our side of the carriage, along the bottom edge, when there is floor
+    // enough to look across: it takes the last rows.
+    let ours = h - floor >= 14;
+    let aisle_end = if ours { h - 10 } else { h - 1 };
+
+    // The conductor, working down the carriage just in front of the bench.
+    conductor(c, frame, w, (floor + 9).min(h - 1));
+
+    // People standing in the aisle, as many rows as there is room for,
+    // farther rows first, swaying at each rail joint.
+    let (back, front) = (floor + 15, aisle_end);
+    if front >= back {
+        let rows = (front - back) / 14 + 1;
+        for r in 0..rows {
+            let feet = if rows == 1 {
+                front
+            } else {
+                back + (front - back) * r / (rows - 1)
+            };
+            let stagger = if r % 2 == 0 { 0 } else { 11 };
+            let mut x = first + stagger;
+            while x < w + 22 {
+                let seed = hash_at((x - ox).div_euclid(11) * 7 + r, 211);
+                if !seed.is_multiple_of(3) {
+                    rider(c, frame, x, feet, seed, jolt);
+                }
+                x += 22;
+            }
+        }
+    }
+
+    if ours {
+        our_side(c, frame, ox, w, h);
+    }
+}
+
+/// Someone standing in the aisle, side on, `x` their left edge, feet on
+/// `feet`. Most hold a strap; others have a suitcase, a bike, a dog at their
+/// feet, or a phone. At each rail joint they sway a pixel.
+fn rider(c: &mut Canvas, frame: u64, x: i32, feet: i32, seed: u64, jolt: i32) {
+    let who = look(seed);
+    let right = (seed / 3).is_multiple_of(2);
+    let fx = |dx: i32| if right { x + dx } else { x + 6 - dx };
+    let palette = [
+        ('h', who.hair),
+        ('f', who.skin),
+        ('e', rgb(0x2a1d18)),
+        ('c', who.coat),
+        ('t', who.trousers),
+        ('s', rgb(0x1a1a1a)),
+    ];
+    let top = feet - 15;
+    let sway = jolt * if right { 1 } else { -1 };
+    let what = seed / 7 % 6;
+    // Things beside them go behind them.
+    match what {
+        2 => {
+            // A suitcase on wheels.
+            let sx = fx(8).min(fx(14));
+            c.rect(sx, feet - 7, 7, 7, rgb(0x2f6b9a));
+            c.rect(sx, feet - 7, 7, 1, rgb(0x4a86b8));
+            c.rect(sx + 3, feet - 10, 1, 3, rgb(0x8a8a9a));
+            c.rect(sx + 2, feet - 10, 3, 1, rgb(0x8a8a9a));
+        }
+        3 => {
+            // A bike, held by the saddle.
+            let (b0, b1) = (fx(8) as f64, fx(19) as f64);
+            let (lo, hi) = (b0.min(b1), b0.max(b1));
+            for wx in [lo, hi] {
+                for k in 0..16 {
+                    let a = k as f64 / 16.0 * TAU;
+                    c.set(
+                        (wx + a.cos() * 3.0).round() as i32,
+                        (feet as f64 - 3.0 + a.sin() * 3.0).round() as i32,
+                        rgb(0x1a1a22),
+                    );
+                }
+            }
+            let frame_color = rgb([0xd1495b, 0x3fa39a, 0xe9c46a][(seed / 5 % 3) as usize]);
+            c.line(
+                (lo, feet as f64 - 3.0),
+                (lo + 5.0, feet as f64 - 8.0),
+                frame_color,
+            );
+            c.line(
+                (lo + 5.0, feet as f64 - 8.0),
+                (hi, feet as f64 - 3.0),
+                frame_color,
+            );
+            c.line(
+                (lo + 5.0, feet as f64 - 8.0),
+                (lo + 6.0, feet as f64 - 3.0),
+                frame_color,
+            );
+            c.rect(lo as i32 + 3, feet - 10, 3, 1, rgb(0x2a2a2a));
+        }
+        4 => {
+            // A dog lying at their feet, its tail going.
+            let dx = fx(7).min(fx(15));
+            let fur = rgb([0x8a5a3c, 0x2a2a2a, 0xd9a441][(seed / 5 % 3) as usize]);
+            c.ellipse(dx as f64 + 4.5, feet as f64 - 1.5, 4.5, 1.8, fur);
+            c.ellipse(
+                dx as f64 + if right { 8.5 } else { 0.5 },
+                feet as f64 - 2.5,
+                1.8,
+                1.6,
+                fur,
+            );
+            let wag = (phase_at(frame, 6, unit(seed)) < 0.5) as i32;
+            let tail = if right { dx - 1 } else { dx + 9 };
+            c.set(tail, feet - 2 - wag, fur);
+        }
+        _ => {}
+    }
+    sprite(
+        c,
+        x + sway,
+        top,
+        &["..hhh..", ".hhhhf.", ".hhhef.", "..hff..", "...f..."],
+        &palette,
+        !right,
+    );
+    sprite(
+        c,
+        x,
+        top + 5,
+        &[
+            "..ccc..", ".ccccc.", ".ccccc.", ".ccccc.", ".cccc..", ".cccc..", "..tt...", "..tt...",
+            "..tt...", "..tt...", "..ss...",
+        ],
+        &palette,
+        !right,
+    );
+    let sleeve = mix(who.coat, rgb(0x000000), 0.2);
+    let shoulder = (fx(3) as f64, (top + 6) as f64);
+    match what {
+        0 | 1 => {
+            // An arm up to a strap hanging from above.
+            let hand = (fx(4) + sway, top - 4);
+            c.line(shoulder, (hand.0 as f64, hand.1 as f64 + 1.0), sleeve);
+            c.set(hand.0, hand.1, who.skin);
+            c.line(
+                (hand.0 as f64, (top - 9) as f64),
+                (hand.0 as f64, (hand.1 - 1) as f64),
+                rgb(0x2a2a2a),
+            );
+            c.rect(hand.0 - 1, hand.1 - 1, 3, 1, STEEL_DARK);
+        }
+        5 => {
+            // A phone in hand, lighting the face.
+            let glow = 0.5 + 0.5 * wave(frame, 2, unit(seed));
+            c.line(shoulder, (fx(5) as f64, (top + 5) as f64), sleeve);
+            c.set(fx(5), top + 4, mix(rgb(0x6fa8ff), rgb(0xe0f0ff), glow));
+            c.glow(
+                fx(4) as f64 + 0.5,
+                (top + 3) as f64,
+                3.5,
+                rgb(0x9ac4ff),
+                0.25 * glow,
+            );
+        }
+        _ => {
+            // A hand on the suitcase, the bike, the lead.
+            c.line(shoulder, (fx(6) as f64, (top + 9) as f64), sleeve);
+            c.set(fx(7), top + 9, who.skin);
+        }
+    }
+}
+
+/// The conductor: navy uniform, a cap with a gold band, working down the
+/// carriage once a loop. Four times they stop to check a ticket, arm out to
+/// the bench, then walk on.
+fn conductor(c: &mut Canvas, frame: u64, w: i32, feet: i32) {
+    let t = phase(frame, 1) * 4.0;
+    let (leg, into) = (t.floor(), t.fract());
+    let walking = into >= 0.25;
+    let along = (leg + if walking { (into - 0.25) / 0.75 } else { 0.0 }) / 4.0;
+    let x = (along * (w + 24) as f64) as i32 - 12;
+    let step = walking && phase(frame, 32) < 0.5;
+    let navy = rgb(0x1f2a48);
+    let legs: [&str; 2] = if step {
+        ["..n.n..", ".n...n."]
+    } else {
+        ["..nn...", "..nn..."]
+    };
+    let rows = [
+        "..kkk..", ".kgggk.", "..hff..", "..fef..", "...f...", "..nnn..", ".nnynn.", ".nnnnn.",
+        ".nnynn.", ".nnnn..", ".nnnn..", legs[0], legs[0], legs[1], "..ss...",
+    ];
+    sprite(
+        c,
+        x,
+        feet - 14,
+        &rows,
+        &[
+            ('k', navy),
+            ('g', CAP_BAND),
+            ('h', rgb(0x3a2a1a)),
+            ('f', rgb(0xd9a07a)),
+            ('e', rgb(0x2a1d18)),
+            ('n', navy),
+            ('y', rgb(0xe9c46a)),
+            ('s', rgb(0x1a1a1a)),
+        ],
+        false,
+    );
+    if !walking {
+        // Arm out toward the bench, holding the punch.
+        c.line(
+            ((x + 4) as f64, (feet - 9) as f64),
+            ((x + 7) as f64, (feet - 12) as f64),
+            navy,
+        );
+        c.rect(x + 7, feet - 13, 2, 2, rgb(0xb8bccb));
+    }
+}
+
+/// Our side of the carriage: heads and shoulders from behind along the
+/// bottom edge, dark against the floor, rim-lit by the ceiling lights. Now
+/// and then one turns, a sliver of face catching the light.
+fn our_side(c: &mut Canvas, frame: u64, ox: i32, w: i32, h: i32) {
+    let rim = rgb(0xffe8b0);
+    let mut slot = (0 - ox).div_euclid(18) - 1;
+    loop {
+        let x = ox + slot * 18;
+        if x > w {
+            break;
+        }
+        let seed = hash_at(slot, 77);
+        if !seed.is_multiple_of(4) {
+            let cx = x as f64 + 9.0 + (seed % 5) as f64 - 2.0;
+            let head = (h - 7) as f64 + (seed / 5 % 2) as f64;
+            let hood = (seed / 11).is_multiple_of(4);
+            c.ellipse(cx, h as f64 + 2.0, 9.0, 5.0, SHADOW);
+            c.ellipse(cx, head, if hood { 4.4 } else { 3.6 }, 4.2, SHADOW);
+            // The ceiling lights catch the crown of each head, and the
+            // shoulders' tops more faintly.
+            let rx = if hood { 4.4 } else { 3.6 };
+            for dx in -2i32..=2 {
+                let t = dx as f64 / rx;
+                let top = head - 4.2 * (1.0 - t * t).max(0.0).sqrt();
+                c.blend(
+                    cx as i32 + dx,
+                    top.round() as i32,
+                    rim,
+                    0.4 - dx.abs() as f64 * 0.08,
+                );
+            }
+            for dx in [-7i32, -6, 6, 7] {
+                let t = dx as f64 / 9.0;
+                let top = h as f64 + 2.0 - 5.0 * (1.0 - t * t).max(0.0).sqrt();
+                c.blend(cx as i32 + dx, top.round() as i32, rim, 0.2);
+            }
+            // Turning to look out, now and then.
+            let turn = phase_at(frame, 1, unit(seed));
+            if (0.3..0.42).contains(&turn) {
+                let side = if seed.is_multiple_of(2) { 3 } else { -3 };
+                c.set(cx as i32 + side, head as i32, rgb(0x6a4a3a));
+                c.set(cx as i32 + side, head as i32 + 1, rgb(0x5a3a2a));
+            }
+        }
+        slot += 1;
     }
 }
 

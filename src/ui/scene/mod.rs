@@ -792,6 +792,67 @@ mod test {
         }
     }
 
+    /// The train's floor, without the riders, the conductor and our side,
+    /// still has poles, lamp light and the things at people's feet: it measured
+    /// 0.075 to 0.084. With them, 0.139 to 0.209.
+    const AISLE_MIN: f64 = 0.11;
+
+    /// The conductor works down the carriage: across the loop they get from
+    /// one side to the other, and they stop along the way.
+    #[test]
+    fn the_conductor_walks_and_stops() {
+        let (w, h) = (180usize, 88usize);
+        let at = |frame| {
+            let canvas = Scene::NightTrain.render(frame, w, h);
+            let xs: Vec<usize> = (0..h)
+                .flat_map(|y| (0..w).map(move |x| (x, y)))
+                .filter(|&(x, y)| canvas.get(x, y) == super::train::CAP_BAND)
+                .map(|(x, _)| x)
+                .collect();
+            xs.first().copied()
+        };
+        let seen: Vec<usize> = (0..FRAMES).filter_map(at).collect();
+        let (lo, hi) = (*seen.iter().min().unwrap(), *seen.iter().max().unwrap());
+        assert!(
+            hi - lo > w / 2,
+            "the conductor stayed between {lo} and {hi}"
+        );
+        let still = (0..FRAMES - 1)
+            .filter(|&f| at(f).is_some() && at(f) == at(f + 1))
+            .count();
+        assert!(still >= 20, "never stopped: {still} still frames");
+    }
+
+    /// Under the far bench the train's floor fills: people standing in the
+    /// aisle, the conductor, our side's silhouettes along the bottom; see
+    /// `AISLE_MIN` for how bare and busy measured.
+    #[test]
+    fn the_train_aisle_is_not_empty() {
+        for (w, h) in [(180usize, 88usize), (110, 120), (200, 160)] {
+            let canvas = Scene::NightTrain.render(0, w, h);
+            let (_, oy) = super::train::train_origin(&canvas);
+            let floor = (oy + 46) as usize;
+            let (mut sharp, mut total) = (0usize, 0usize);
+            for y in floor + 6..h - 1 {
+                for x in 0..w - 1 {
+                    let (a, b) = (canvas.get(x, y), canvas.get(x + 1, y));
+                    let d: i32 = (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).sum();
+                    total += 1;
+                    sharp += (d > 90) as usize;
+                }
+            }
+            let density = sharp as f64 / total.max(1) as f64;
+            assert!(
+                density >= AISLE_MIN,
+                "{w}x{h}: the aisle is empty ({density:.3})"
+            );
+            let shadows = (0..w)
+                .filter(|&x| canvas.get(x, h - 1) == super::train::SHADOW)
+                .count();
+            assert!(shadows > w / 4, "{w}x{h}: nobody on our side ({shadows})");
+        }
+    }
+
     /// The wall reaches the top on a tall canvas: no row there is left black.
     #[test]
     fn the_wall_runs_to_the_ceiling() {
