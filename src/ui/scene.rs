@@ -303,18 +303,30 @@ fn core_origin(c: &Canvas) -> (i32, i32) {
 
 // ---------------------------------------------------------------- the desk --
 
-/// The desk scene's own anchor: like [`core_origin`], but raised until the
-/// cat — whose lowest row is the core's row 39 — sits at least a third of the
-/// height up from the bottom. The desk below simply grows.
+/// Like [`core_origin`], but raised until the core's row `lowest` — the
+/// bottom of its subject, the cat or the car — sits at least a third of the
+/// height up from the bottom. What lies below the subject simply grows.
 ///
-/// Never more than four rows above the canvas top, which on the smallest
-/// canvas costs one row of the window frame and nothing else.
-fn desk_origin(c: &Canvas) -> (i32, i32) {
+/// Never more than `crop` rows above the canvas top: on a canvas too short
+/// to honour the third, the subject gets as high as that allows.
+fn raised_origin(c: &Canvas, lowest: i32, crop: i32) -> (i32, i32) {
     let (ox, bottom_anchored) = core_origin(c);
     let h = c.height as i32;
-    // The cat's bottom row is `oy + 39`; below it must be at least `h / 3`.
-    let third_up = h - (h + 2) / 3 - 40;
-    (ox, bottom_anchored.min(third_up).max(-4))
+    // Below row `oy + lowest` there must be at least `ceil(h / 3)` rows.
+    let third_up = h - (h + 2) / 3 - (lowest + 1);
+    (ox, bottom_anchored.min(third_up).max(-crop))
+}
+
+/// The desk scene's anchor. The cat's lowest row is the core's row 39; four
+/// rows of crop cost one row of the window frame and nothing else.
+fn desk_origin(c: &Canvas) -> (i32, i32) {
+    raised_origin(c, 39, 4)
+}
+
+/// The drive's anchor. The car's lowest row, bobbing, is the core's row 52;
+/// twelve rows of crop are sky and stars, stopping short of the sun.
+fn drive_origin(c: &Canvas) -> (i32, i32) {
+    raised_origin(c, 52, 12)
 }
 
 const WALL_TOP: Rgb = rgb(0x120e24);
@@ -1117,7 +1129,7 @@ fn cactus(c: &mut Canvas, frame: u64, x: i32, desk: i32, seed: u64) {
 // --------------------------------------------------------------- the drive --
 
 fn synthwave_drive(c: &mut Canvas, frame: u64) {
-    let (ox, oy) = core_origin(c);
+    let (ox, oy) = drive_origin(c);
     let (w, h) = (c.width as i32, c.height as i32);
     let horizon = oy + 32;
     c.origin(0, 0);
@@ -1278,11 +1290,18 @@ fn synthwave_drive(c: &mut Canvas, frame: u64) {
         k += 1;
     }
     for (root, lean) in roots {
-        palm(c, frame, root as f64, lean, h, oy + 22);
+        palm(
+            c,
+            frame,
+            root as f64,
+            lean,
+            (oy + HEIGHT as i32).min(h),
+            oy + 22,
+        );
     }
 
     // The car, seen from behind, bobbing on the road, tail lights pulsing.
-    c.origin(ox, h - 54);
+    c.origin(ox, oy);
     car(c, frame);
 }
 
@@ -1582,6 +1601,30 @@ mod test {
                 !bottom.iter().all(|&p| p == rgb(0x4a2f22)),
                 "{w}x{h}: the bottom is still desk"
             );
+        }
+    }
+
+    /// The car, like the cat, sits at least a third of the way up wherever the
+    /// canvas is tall enough to allow it without losing the sun — found in
+    /// the picture as the lowest row of its body.
+    #[test]
+    fn the_car_sits_at_least_a_third_up() {
+        let body = rgb(0x0a0012);
+        for (w, h) in [(180usize, 88usize), (110, 120), (200, 160), (96, 100)] {
+            for frame in [0, 10] {
+                let canvas = Scene::SynthwaveDrive.render(frame, w, h);
+                let ox = (w - WIDTH) / 2;
+                let lowest = (0..h)
+                    .rev()
+                    .find(|&y| (ox + 35..ox + 61).any(|x| canvas.get(x, y) == body))
+                    .unwrap_or_else(|| panic!("no car at {w}x{h}"));
+                let below = h - 1 - lowest;
+                assert!(
+                    below * 3 >= h,
+                    "{w}x{h} frame {frame}: only {below} rows under the car, need {}",
+                    h.div_ceil(3)
+                );
+            }
         }
     }
 
