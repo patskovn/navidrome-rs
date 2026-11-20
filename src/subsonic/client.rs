@@ -6,12 +6,14 @@ use opensubsonic::Client;
 use opensubsonic::data::AlbumId3;
 use opensubsonic::data::ArtistId3;
 use opensubsonic::data::Child;
+use opensubsonic::data::InternetRadioStation;
 
 use super::Album;
 use super::AlbumSort;
 use super::Artist;
 use super::Library;
 use super::SearchResults;
+use super::Station;
 use super::Track;
 
 /// How many albums to pull per page when walking the library.
@@ -54,6 +56,15 @@ fn artist_from(value: ArtistId3) -> Artist {
     }
 }
 
+fn station_from(value: InternetRadioStation) -> Station {
+    Station {
+        id: value.id,
+        name: value.name,
+        stream_url: value.stream_url,
+        home_page_url: value.home_page_url,
+    }
+}
+
 fn track_from(value: Child) -> Track {
     Track {
         id: value.id,
@@ -64,6 +75,7 @@ fn track_from(value: Child) -> Track {
         duration: value.duration,
         suffix: value.suffix,
         cover_art: value.cover_art,
+        live_url: None,
     }
 }
 
@@ -148,6 +160,32 @@ impl Library for OpenSubsonicLibrary {
         // A discography reads in release order; undated albums go last.
         albums.sort_by_key(|a| a.year.unwrap_or(i32::MAX));
         Ok(albums)
+    }
+
+    async fn radios(&self) -> anyhow::Result<Vec<Station>> {
+        let stations = self
+            .client
+            .get_internet_radio_stations()
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .context("listing radio stations")?;
+        Ok(stations.into_iter().map(station_from).collect())
+    }
+
+    async fn create_radio(&self, name: &str, stream_url: &str) -> anyhow::Result<()> {
+        self.client
+            .create_internet_radio_station(stream_url, name, None)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .with_context(|| format!("adding station {name:?}"))
+    }
+
+    async fn delete_radio(&self, id: &str) -> anyhow::Result<()> {
+        self.client
+            .delete_internet_radio_station(id)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .with_context(|| format!("deleting station {id}"))
     }
 
     /// Subsonic has no "every song" endpoint, so "all music" is assembled by
@@ -254,6 +292,25 @@ mod test {
         assert_eq!(artist.name, "Miles Davis");
         assert_eq!(artist.album_count, Some(12));
         assert_eq!(artist.cover_art.as_deref(), Some("ar-1"));
+    }
+
+    #[test]
+    fn maps_station_fields() {
+        let json = serde_json::json!({
+            "id": "1",
+            "name": "I Love Chillhop",
+            "streamUrl": "https://ilm.example/chillhop-192",
+            "homePageUrl": "https://ilm.example",
+        });
+        let station = station_from(serde_json::from_value::<InternetRadioStation>(json).unwrap());
+
+        assert_eq!(station.id, "1");
+        assert_eq!(station.name, "I Love Chillhop");
+        assert_eq!(station.stream_url, "https://ilm.example/chillhop-192");
+        assert_eq!(
+            station.home_page_url.as_deref(),
+            Some("https://ilm.example")
+        );
     }
 
     #[test]

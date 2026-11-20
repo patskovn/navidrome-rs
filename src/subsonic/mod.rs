@@ -40,6 +40,29 @@ pub struct Artist {
     pub cover_art: Option<String>,
 }
 
+/// An internet radio station, as the server stores it.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Station {
+    pub id: String,
+    pub name: String,
+    pub stream_url: String,
+    pub home_page_url: Option<String>,
+}
+
+impl Station {
+    /// The station as something the player can queue. It plays from its own
+    /// URL, live, rather than through the server's `stream` endpoint.
+    pub fn as_track(&self) -> Track {
+        Track {
+            id: format!("radio:{}", self.id),
+            title: self.name.clone(),
+            artist: Some("Internet radio".into()),
+            live_url: Some(self.stream_url.clone()),
+            ..Default::default()
+        }
+    }
+}
+
 /// A single track.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Track {
@@ -54,6 +77,10 @@ pub struct Track {
     pub suffix: Option<String>,
     /// Id to fetch artwork with; not the image itself. Usually the album's.
     pub cover_art: Option<String>,
+    /// Set for a live source — a radio station — which plays from this URL
+    /// with no length, no seeking and no cache, instead of through the
+    /// server's `stream` endpoint.
+    pub live_url: Option<String>,
 }
 
 impl Track {
@@ -66,6 +93,9 @@ impl Track {
     }
 
     pub fn duration_display(&self) -> String {
+        if self.live_url.is_some() {
+            return "LIVE".to_string();
+        }
         match self.duration {
             Some(secs) if secs >= 0 => format_duration(secs as u64),
             _ => "--:--".to_string(),
@@ -116,6 +146,14 @@ pub trait Library: Send + Sync + 'static {
 
     /// One artist's albums, oldest first.
     async fn artist_albums(&self, artist_id: &str) -> anyhow::Result<Vec<Album>>;
+
+    /// The internet radio stations configured on the server.
+    async fn radios(&self) -> anyhow::Result<Vec<Station>>;
+
+    /// Adds a station. Navidrome only lets admins do this.
+    async fn create_radio(&self, name: &str, stream_url: &str) -> anyhow::Result<()>;
+
+    async fn delete_radio(&self, id: &str) -> anyhow::Result<()>;
 
     /// A page of "all music". Subsonic has no true "all songs" endpoint, so
     /// this is served by walking albums — see the implementation.
@@ -189,6 +227,22 @@ impl Library for SwappableLibrary {
         library.artist_albums(&id).await
     }
 
+    async fn radios(&self) -> anyhow::Result<Vec<Station>> {
+        self.current().radios().await
+    }
+
+    async fn create_radio(&self, name: &str, stream_url: &str) -> anyhow::Result<()> {
+        let library = self.current();
+        let (name, stream_url) = (name.to_string(), stream_url.to_string());
+        library.create_radio(&name, &stream_url).await
+    }
+
+    async fn delete_radio(&self, id: &str) -> anyhow::Result<()> {
+        let library = self.current();
+        let id = id.to_string();
+        library.delete_radio(&id).await
+    }
+
     async fn all_tracks(&self, offset: u32, limit: u32) -> anyhow::Result<Vec<Track>> {
         self.current().all_tracks(offset, limit).await
     }
@@ -218,6 +272,8 @@ pub mod fake {
     /// In-memory [`Library`] for reducer tests.
     #[derive(Default)]
     pub struct FakeLibrary {
+        /// Mutable, so creating and deleting can be observed by the next list.
+        pub stations: Mutex<Vec<Station>>,
         pub artists: Vec<Artist>,
         pub albums: Vec<Album>,
         pub tracks: Vec<Track>,
@@ -274,6 +330,33 @@ pub mod fake {
             Ok(self.albums.clone())
         }
 
+        async fn radios(&self) -> anyhow::Result<Vec<Station>> {
+            self.record("radios");
+            Ok(self.stations.lock().expect("poisoned").clone())
+        }
+
+        async fn create_radio(&self, name: &str, stream_url: &str) -> anyhow::Result<()> {
+            self.record(&format!("create_radio {name} {stream_url}"));
+            let mut stations = self.stations.lock().expect("poisoned");
+            let id = format!("r{}", stations.len() + 1);
+            stations.push(Station {
+                id,
+                name: name.into(),
+                stream_url: stream_url.into(),
+                home_page_url: None,
+            });
+            Ok(())
+        }
+
+        async fn delete_radio(&self, id: &str) -> anyhow::Result<()> {
+            self.record(&format!("delete_radio {id}"));
+            self.stations
+                .lock()
+                .expect("poisoned")
+                .retain(|s| s.id != id);
+            Ok(())
+        }
+
         async fn all_tracks(&self, _offset: u32, _limit: u32) -> anyhow::Result<Vec<Track>> {
             self.record("all_tracks");
             Ok(self.tracks.clone())
@@ -316,6 +399,23 @@ mod test {
         assert_eq!(format_duration(65), "1:05");
         assert_eq!(format_duration(600), "10:00");
         assert_eq!(format_duration(9), "0:09");
+    }
+
+    #[test]
+    fn a_station_plays_live_from_its_own_url() {
+        let track = Station {
+            id: "7".into(),
+            name: "Chill".into(),
+            stream_url: "https://radio.example/chill.mp3".into(),
+            home_page_url: None,
+        }
+        .as_track();
+        assert_eq!(
+            track.live_url.as_deref(),
+            Some("https://radio.example/chill.mp3")
+        );
+        assert_eq!(track.duration_display(), "LIVE");
+        assert_eq!(track.title, "Chill");
     }
 
     #[test]

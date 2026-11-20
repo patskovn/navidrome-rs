@@ -11,11 +11,15 @@
 //! event channel out that the app turns back into actions.
 
 use std::io::{Read, Seek};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
+use stream_download::http::HttpStream;
+use stream_download::storage::bounded::BoundedStorageProvider;
+use stream_download::storage::memory::MemoryStorageProvider;
 use stream_download::{Settings, StreamDownload};
 use tokio::sync::mpsc;
 
@@ -31,6 +35,21 @@ const POSITION_INTERVAL: Duration = Duration::from_millis(200);
 /// The bar is a few dozen cells wide, so anything finer than this cannot move
 /// it — and every event costs a full repaint.
 const BUFFER_REPORT_STEP: f64 = 0.01;
+
+/// Memory kept behind the playhead of a live stream.
+///
+/// A station never ends, so its bytes go round a fixed ring rather than into
+/// the cache, where a file would grow for as long as anyone listened. Two
+/// megabytes is a couple of minutes of a 128k stream: ample slack for the
+/// decoder, and a fixed cost however long the radio stays on.
+const LIVE_BUFFER: usize = 2 * 1024 * 1024;
+
+/// How much of a live stream to hold before starting to play.
+///
+/// The library default is 256 KiB, which a 128k station takes sixteen seconds
+/// to deliver — sixteen seconds of silence after pressing Enter. This is about
+/// three seconds at that rate, and enough for the decoder to find its frames.
+const LIVE_PREFETCH: u64 = 48 * 1024;
 
 /// Instructions to the playback thread.
 #[derive(Debug)]
@@ -217,6 +236,29 @@ async fn open_source(
     track: &Track,
     url: &str,
 ) -> anyhow::Result<(Playable, Option<DownloadProgress>)> {
+    if let Some(live) = &track.live_url {
+        log::debug!("tuning in to {live}");
+        let provider = BoundedStorageProvider::new(
+            MemoryStorageProvider,
+            NonZeroUsize::new(LIVE_BUFFER).expect("a nonzero constant"),
+        );
+        // Our own client, not the library's default: without a User-Agent
+        // some stations answer 403 to the very URL the probe just accepted.
+        let client = reqwest::Client::builder()
+            .user_agent(crate::probe::USER_AGENT)
+            .connect_timeout(Duration::from_secs(10))
+            .build()?;
+        let http = HttpStream::new(client, live.parse()?)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+        let settings = Settings::default().prefetch_bytes(LIVE_PREFETCH);
+        let stream = StreamDownload::from_stream(http, provider, settings)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+        // Nothing to watch: there is no total for progress to be a part of.
+        return Ok((Box::new(stream), None));
+    }
+
     if let Some(path) = cache.lookup(&track.id, track.suffix.as_deref()) {
         log::debug!("cache hit for {}", track.id);
         return Ok((Box::new(std::fs::File::open(path)?), None));
@@ -230,6 +272,26 @@ async fn open_source(
         .await
         .map_err(|err| anyhow::anyhow!("{err}"))?;
     Ok((Box::new(stream), Some(progress)))
+}
+
+/// A decoder for `source`.
+///
+/// A live stream has no end, so it must not be treated as seekable: the
+/// decoder would otherwise try to find the end to work out a duration, and
+/// there is none to find.
+fn decode(
+    source: Playable,
+    live: bool,
+) -> Result<rodio::Decoder<Playable>, rodio::decoder::DecoderError> {
+    if live {
+        rodio::Decoder::builder()
+            .with_data(source)
+            .with_seekable(false)
+            .with_gapless(false)
+            .build()
+    } else {
+        rodio::Decoder::new(source)
+    }
 }
 
 fn run(
@@ -312,7 +374,7 @@ fn run(
                         && let Some((track, url)) = current.clone()
                         && let Ok((source, progress)) =
                             runtime.block_on(open_source(&cache, &track, &url))
-                        && let Ok(decoded) = rodio::Decoder::new(source)
+                        && let Ok(decoded) = decode(source, track.live_url.is_some())
                     {
                         player.append(Tapped::new(decoded, tap.clone()));
                         player.play();
@@ -348,7 +410,7 @@ fn run(
                 current = Some((track.clone(), url.clone()));
 
                 match runtime.block_on(open_source(&cache, &track, &url)) {
-                    Ok((source, progress)) => match rodio::Decoder::new(source) {
+                    Ok((source, progress)) => match decode(source, track.live_url.is_some()) {
                         Ok(decoded) => {
                             player.append(Tapped::new(decoded, tap.clone()));
                             player.play();
@@ -359,13 +421,16 @@ fn run(
                             let _ = events.send(Event::Paused(false));
                             // Reported up front so the bar is right on the very
                             // first frame: a cache hit is wholly buffered, and
-                            // a fresh stream starts near zero.
-                            let _ = events.send(Event::Buffered {
-                                ratio: match &progress {
-                                    Some(p) => p.fraction().unwrap_or(0.0),
-                                    None => 1.0,
-                                },
-                            });
+                            // a fresh stream starts near zero. A live stream
+                            // has no whole to be a fraction of, so says nothing.
+                            if track.live_url.is_none() {
+                                let _ = events.send(Event::Buffered {
+                                    ratio: match &progress {
+                                        Some(p) => p.fraction().unwrap_or(0.0),
+                                        None => 1.0,
+                                    },
+                                });
+                            }
                             buffering = progress;
                             reported_buffer = f64::NEG_INFINITY;
                         }
@@ -428,7 +493,7 @@ fn run(
                             && let Some((track, url)) = current.clone()
                             && let Ok((source, progress)) =
                                 runtime.block_on(open_source(&cache, &track, &url))
-                            && let Ok(decoded) = rodio::Decoder::new(source)
+                            && let Ok(decoded) = decode(source, track.live_url.is_some())
                         {
                             player.append(Tapped::new(decoded, tap.clone()));
                             player.play();
@@ -530,5 +595,56 @@ mod device_probe {
         for (id, label) in super::output_devices() {
             println!("PROBE {label}  [{id}]");
         }
+    }
+}
+
+#[cfg(test)]
+mod live_probe {
+    /// Tunes in to a real station and decodes a few seconds, no device needed.
+    ///
+    /// Opt-in, because it reaches a stranger's server:
+    /// `NAVIDROME_RS_LIVE_URL=<stream> cargo test tune_in -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "reaches a real radio station; set NAVIDROME_RS_LIVE_URL"]
+    async fn tune_in() {
+        use rodio::Source;
+        use std::sync::Arc;
+
+        let url = std::env::var("NAVIDROME_RS_LIVE_URL").expect("set NAVIDROME_RS_LIVE_URL");
+        let dir = std::env::temp_dir().join(format!("navidrome-live-{}", std::process::id()));
+        let cache = Arc::new(super::TrackCache::new(&dir, 1024).unwrap());
+        let track = crate::subsonic::Track {
+            id: "radio:probe".into(),
+            title: "probe".into(),
+            live_url: Some(url.clone()),
+            ..Default::default()
+        };
+
+        let started = std::time::Instant::now();
+        let (source, progress) = super::open_source(&cache, &track, "unused").await.unwrap();
+        assert!(progress.is_none(), "a live stream has nothing to measure");
+        let connected = started.elapsed();
+
+        // Decoding blocks on the network; keep it off the async workers.
+        let report = tokio::task::spawn_blocking(move || {
+            let decoder = super::decode(source, true).expect("decodable");
+            let (rate, channels) = (decoder.sample_rate(), decoder.channels());
+            let wanted = rate.get() as usize * channels.get() as usize * 3;
+            let samples: Vec<f32> = decoder.take(wanted).collect();
+            let audible = samples.iter().filter(|s| s.abs() > 1e-4).count();
+            (rate, channels, samples.len(), audible, wanted)
+        })
+        .await
+        .unwrap();
+
+        let (rate, channels, got, audible, wanted) = report;
+        println!(
+            "LIVE {url}: connected in {connected:?}, {rate:?} Hz × {channels:?}, \
+             decoded {got}/{wanted} samples ({audible} audible) in {:?}",
+            started.elapsed()
+        );
+        assert_eq!(got, wanted, "the stream ended early");
+        assert!(audible > got / 10, "that was mostly silence");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

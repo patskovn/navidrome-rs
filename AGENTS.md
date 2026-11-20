@@ -32,6 +32,7 @@ Do not leave new warnings behind.
 src/
 ├── main.rs          terminal setup, event loop, dependency wiring
 ├── config.rs        server config, including the password, on disk
+├── probe.rs         checks a radio URL is audio before the add form plays it
 ├── subsonic/        the server boundary
 │   ├── mod.rs       `Library` trait + app-owned domain types + test fake
 │   └── client.rs    `opensubsonic`-backed implementation
@@ -46,6 +47,7 @@ src/
 │   ├── artists.rs   Artists tab: local filter, artist → albums → tracks
 │   ├── songs.rs     All Music tab
 │   ├── player.rs    queue and transport
+│   ├── radios.rs    Radios tab: the server's stations, add (with preview), delete
 │   └── ui.rs        drawing for the root feature
 └── ui/              widgets ported from tgpt (see note below)
 ```
@@ -230,9 +232,29 @@ Reducers are testable because the server sits behind the `Library` trait; use
   wrong truncates the right-hand column rather than the title, which reads as a
   formatting bug ("11:33" becoming "11:3").
 
+- **Radio is a queue of one live track.** A station plays as a `Track` whose
+  `live_url` is set, so the player, the bar and Now Playing need no second
+  code path. The engine branches on `live_url`: a fixed 2 MiB memory ring
+  instead of the disk cache (a station never ends, so a cache file would grow
+  for as long as it played), a decoder built non-seekable (or it hunts for an
+  end that does not exist), and a 48 KiB prefetch instead of the library's
+  256 KiB — sixteen seconds of silence on a 128k station.
+- **Live streams need a User-Agent.** `stream-download`'s default client sends
+  none, and some stations (Hunter.FM) answer 403 to it — while the probe,
+  which sends one, said the same URL was fine. Both now send
+  `probe::USER_AGENT`. `cargo test tune_in -- --ignored` with
+  `NAVIDROME_RS_LIVE_URL` set decodes a few seconds of a real station; it is
+  ignored by default because it reaches someone else's server.
+- **The station form owns the keyboard, `?` included.** Stream URLs carry
+  query strings, so the help key is text there. A preview is stopped only if
+  it is still what is playing (`radios::PREVIEW_ID`): the user may have
+  started something else meanwhile.
+
 ## Not done yet
 
-No playlists, no shuffle/repeat. The queue can be viewed
+No playlists, no shuffle/repeat. Radio stations cannot be edited, only
+added and deleted, and live ICY song titles are not shown. HE-AAC stations
+play at their base rate only (symphonia has no SBR), so they sound dull. The queue can be viewed
 and pruned but not reordered. Seek is implemented in the
 engine (`audio::Command::Seek`) but not bound to a key. "All Music" loads a page
 of albums and flattens them rather than paging by track, because Subsonic has no

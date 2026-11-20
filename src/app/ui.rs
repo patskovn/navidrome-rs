@@ -16,7 +16,7 @@ use crate::app::entry::Action;
 use crate::app::entry::State;
 use crate::app::entry::Tab;
 use crate::app::truncate;
-use crate::app::{albums, artists, auth, songs};
+use crate::app::{albums, artists, auth, radios, songs};
 use crate::audio::SampleTap;
 use crate::subsonic::format_duration;
 use crate::ui::DrawingContext;
@@ -158,6 +158,14 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
             store.scope(
                 |s: &State| &s.library().expect("signed in").songs,
                 Action::Songs,
+            ),
+            playing.as_deref(),
+        ),
+        Tab::Radios => radios::ui(
+            &mut ctx.with_area(inner),
+            store.scope(
+                |s: &State| &s.library().expect("signed in").radios,
+                Action::Radios,
             ),
             playing.as_deref(),
         ),
@@ -450,6 +458,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("↵", "open an artist or album, or play a track"),
         ("Esc ←", "back out one level"),
         ("d", "drop a track, in the Queue tab"),
+        ("a d", "add / delete a station, in the Radios tab"),
         ("", ""),
         ("space", "play / pause"),
         ("n p", "next / previous track"),
@@ -528,6 +537,7 @@ mod tests {
             Feature {
                 library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                 audio,
+                probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
             },
             State {
                 session: Session::SignedIn(Box::new(Library {
@@ -611,6 +621,7 @@ mod tests {
             Feature {
                 library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                 audio,
+                probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
             },
             State {
                 session: Session::SignedIn(Box::new(Library {
@@ -697,6 +708,7 @@ mod tests {
                 Feature {
                     library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                     audio: (*audio).clone(),
+                    probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
                 },
                 State {
                     session: Session::SignedIn(Box::new(library)),

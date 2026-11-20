@@ -7,6 +7,7 @@ pub mod artists;
 pub mod auth;
 pub mod entry;
 pub mod player;
+pub mod radios;
 pub mod songs;
 pub mod ui;
 

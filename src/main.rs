@@ -4,6 +4,7 @@ mod app;
 mod audio;
 mod config;
 mod nowplaying;
+mod probe;
 mod subsonic;
 mod ui;
 
@@ -153,6 +154,15 @@ impl Library for NotSignedIn {
     async fn artist_albums(&self, _: &str) -> anyhow::Result<Vec<subsonic::Album>> {
         anyhow::bail!("not signed in")
     }
+    async fn radios(&self) -> anyhow::Result<Vec<subsonic::Station>> {
+        anyhow::bail!("not signed in")
+    }
+    async fn create_radio(&self, _: &str, _: &str) -> anyhow::Result<()> {
+        anyhow::bail!("not signed in")
+    }
+    async fn delete_radio(&self, _: &str) -> anyhow::Result<()> {
+        anyhow::bail!("not signed in")
+    }
     async fn all_tracks(&self, _: u32, _: u32) -> anyhow::Result<Vec<subsonic::Track>> {
         anyhow::bail!("not signed in")
     }
@@ -192,6 +202,7 @@ where
         Feature {
             library: library.clone(),
             audio: audio.clone(),
+            probe: Arc::new(probe::HttpProbe::new()?),
         },
         State::restored(signed_in.then_some(()).and(saved)),
     );

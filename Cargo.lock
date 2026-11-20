@@ -1612,6 +1612,7 @@ dependencies = [
  "opensubsonic",
  "ratatui",
  "ratatui-textarea",
+ "reqwest",
  "rodio",
  "serde",
  "serde_json",

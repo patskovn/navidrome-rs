@@ -16,6 +16,7 @@ use crate::app::albums;
 use crate::app::artists;
 use crate::app::auth;
 use crate::app::player;
+use crate::app::radios;
 use crate::app::songs;
 use std::sync::Arc;
 
@@ -41,17 +42,25 @@ pub enum Tab {
     Albums,
     Artists,
     AllMusic,
+    Radios,
     Queue,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Albums, Tab::Artists, Tab::AllMusic, Tab::Queue];
+    pub const ALL: [Tab; 5] = [
+        Tab::Albums,
+        Tab::Artists,
+        Tab::AllMusic,
+        Tab::Radios,
+        Tab::Queue,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Albums => "Albums",
             Tab::Artists => "Artists",
             Tab::AllMusic => "All Music",
+            Tab::Radios => "Radios",
             Tab::Queue => "Queue",
         }
     }
@@ -76,6 +85,7 @@ pub struct Library {
     pub albums: albums::State,
     pub artists: artists::State,
     pub songs: songs::State,
+    pub radios: radios::State,
     /// Cursor for the Queue tab.
     ///
     /// Not a scoped child feature like the other two tabs: the queue itself
@@ -144,6 +154,8 @@ impl State {
             Tab::AllMusic => library.songs.focus,
             // No search field here, so single-key shortcuts stay commands.
             Tab::Queue => return false,
+            // Text only while adding a station, or answering a delete prompt.
+            Tab::Radios => return library.radios.captures_keys(),
         };
         focus == crate::app::PaneFocus::Search
     }
@@ -186,6 +198,7 @@ pub enum Action {
     Albums(albums::Action),
     Artists(artists::Action),
     Songs(songs::Action),
+    Radios(radios::Action),
     Player(player::Action),
     /// Repaint request while audio plays.
     Tick,
@@ -201,6 +214,8 @@ pub struct Feature {
     /// real client in place of the signed-out stub.
     pub library: Arc<SwappableLibrary>,
     pub audio: AudioEngine,
+    /// Checks a station URL before the add form previews it.
+    pub probe: crate::probe::SharedProbe,
 }
 
 impl Feature {
@@ -289,6 +304,40 @@ impl Reducer for Feature {
                 ),
             )
             .then(
+                Scope::optional(
+                    |s: &mut State| s.library_mut().map(|l| &mut l.radios),
+                    case!(Action::Radios),
+                    radios::Feature {
+                        library: self.library.clone() as SharedLibrary,
+                        probe: self.probe.clone(),
+                    },
+                )
+                .on_delegate(
+                    case!(radios::Action::Delegated),
+                    |s: &mut State, d| match d {
+                        radios::Delegated::Play(track) => {
+                            Effect::send(Action::Player(player::Action::SetQueue {
+                                tracks: vec![*track],
+                                index: 0,
+                            }))
+                        }
+                        // Only a preview: by now the user may have started
+                        // something else, and that must not be cut off.
+                        radios::Delegated::StopPreview => {
+                            let previewing = s
+                                .player
+                                .current_track()
+                                .is_some_and(|t| t.id == radios::PREVIEW_ID);
+                            if previewing {
+                                Effect::send(Action::Player(player::Action::Stop))
+                            } else {
+                                Effect::none()
+                            }
+                        }
+                    },
+                ),
+            )
+            .then(
                 Scope::new(
                     |s: &mut State| &mut s.player,
                     case!(Action::Player),
@@ -360,6 +409,7 @@ impl Reducer for Feature {
                 | Action::Albums(_)
                 | Action::Artists(_)
                 | Action::Songs(_)
+                | Action::Radios(_)
                 | Action::Player(_) => unreachable!("claimed by a scope"),
             })
             .reduce(state, action)
@@ -373,6 +423,14 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     if let Event::FocusGained | Event::FocusLost = event {
         state.focused = matches!(event, Event::FocusGained);
         return Effect::none();
+    }
+
+    // A paste is text, and only the station form takes text as a whole.
+    if let Event::Paste(_) = &event {
+        return match state.library().map(|l| (l.tab, l.radios.form.is_some())) {
+            Some((Tab::Radios, true)) => Effect::send(Action::Radios(radios::Action::Event(event))),
+            _ => Effect::none(),
+        };
     }
 
     let Event::Key(key) = &event else {
@@ -455,7 +513,13 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     // `?` is reserved even though the search field takes every other printable
     // key. Searching for a literal question mark is vanishingly rare, and `?`
     // for help is worth more than that.
-    if key.code == KeyCode::Char('?') {
+    //
+    // The station form is the exception: stream URLs carry query strings
+    // (`/proxy/jamz?mp=/1`), so there `?` is text like any other key.
+    let typing_url = state
+        .library()
+        .is_some_and(|l| l.tab == Tab::Radios && l.radios.form.is_some());
+    if key.code == KeyCode::Char('?') && !typing_url {
         return Effect::send(Action::ToggleHelp);
     }
 
@@ -483,6 +547,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
         Some(Tab::Albums) => Effect::send(Action::Albums(albums::Action::Event(event))),
         Some(Tab::Artists) => Effect::send(Action::Artists(artists::Action::Event(event))),
         Some(Tab::AllMusic) => Effect::send(Action::Songs(songs::Action::Event(event))),
+        Some(Tab::Radios) => Effect::send(Action::Radios(radios::Action::Event(event))),
         Some(Tab::Queue) => reduce_queue_key(state, key.code),
         None => Effect::none(),
     }
@@ -556,6 +621,13 @@ fn load_if_empty(state: &mut State) -> Effect<Action> {
         {
             Effect::send(Action::Songs(songs::Action::Reload))
         }
+        Some(Tab::Radios)
+            if state
+                .library()
+                .is_some_and(|l| !l.radios.loaded && !l.radios.loading) =>
+        {
+            Effect::send(Action::Radios(radios::Action::Reload))
+        }
         // The queue is already in memory; there is nothing to fetch.
         Some(Tab::Queue) => Effect::none(),
         _ => Effect::none(),
@@ -598,6 +670,9 @@ mod test {
         Feature {
             library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
             audio,
+            probe: Arc::new(crate::probe::fake::FakeProbe::failing(
+                "no network in tests",
+            )),
         }
     }
 
@@ -617,6 +692,7 @@ mod test {
         for expected in [
             Tab::Artists,
             Tab::AllMusic,
+            Tab::Radios,
             Tab::Queue,
             Tab::Albums,
             Tab::Artists,
@@ -659,6 +735,106 @@ mod test {
             store.settle();
         }
         assert_eq!(store.state().library().unwrap().tab, Tab::Artists);
+    }
+
+    fn radio_form_store(
+        field: radios::FormField,
+        player: player::State,
+        previewing: bool,
+    ) -> TestStore<Feature> {
+        TestStore::new(
+            feature(),
+            State {
+                session: Session::SignedIn(Box::new(Library {
+                    tab: Tab::Radios,
+                    radios: radios::State {
+                        loaded: true,
+                        form: Some(radios::Form {
+                            field,
+                            previewing,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+                player,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn radio_form(store: &TestStore<Feature>) -> Option<&radios::Form> {
+        store.state().library().unwrap().radios.form.as_ref()
+    }
+
+    /// While adding a station every key is text — including the ones that are
+    /// shortcuts elsewhere, and `?`, which stream URLs are full of.
+    #[tokio::test]
+    async fn the_station_form_takes_shortcut_keys_as_text() {
+        let mut store = radio_form_store(radios::FormField::Name, player::State::new(), false);
+        for c in ['q', '?', 'n', ' ', 'p'] {
+            store.send(Action::Event(key(KeyCode::Char(c))), |_| {});
+            store.settle();
+        }
+        assert_eq!(radio_form(&store).unwrap().name, "q?n p");
+        assert!(!store.state().help, "? must not have opened help");
+    }
+
+    /// A URL is usually pasted, and arrives as one event.
+    #[tokio::test]
+    async fn a_pasted_url_lands_in_the_field() {
+        let mut store = radio_form_store(radios::FormField::Url, player::State::new(), false);
+        store.send(
+            Action::Event(Event::Paste(
+                "https://x.radio.invalid/proxy/jamz?mp=/1\n".into(),
+            )),
+            |_| {},
+        );
+        store.settle();
+        assert_eq!(
+            radio_form(&store).unwrap().url,
+            "https://x.radio.invalid/proxy/jamz?mp=/1"
+        );
+    }
+
+    fn playing(track: crate::subsonic::Track) -> player::State {
+        player::State {
+            queue: vec![track],
+            current: Some(0),
+            is_playing: true,
+            ..player::State::new()
+        }
+    }
+
+    /// Leaving the form stops its preview…
+    #[tokio::test]
+    async fn leaving_the_form_stops_its_preview() {
+        let preview = crate::subsonic::Track {
+            id: radios::PREVIEW_ID.into(),
+            live_url: Some("https://x.radio.invalid/live".into()),
+            ..Default::default()
+        };
+        let mut store = radio_form_store(radios::FormField::Url, playing(preview), true);
+        store.send(Action::Event(key(KeyCode::Esc)), |_| {});
+        store.settle();
+        assert!(radio_form(&store).is_none());
+        assert_eq!(store.state().player.current, None, "the preview stopped");
+    }
+
+    /// …but only the preview. If the user has started something else since,
+    /// that keeps playing.
+    #[tokio::test]
+    async fn leaving_the_form_spares_other_playback() {
+        let album_track = crate::subsonic::Track {
+            id: "song-1".into(),
+            ..Default::default()
+        };
+        let mut store = radio_form_store(radios::FormField::Url, playing(album_track), true);
+        store.send(Action::Event(key(KeyCode::Esc)), |_| {});
+        store.settle();
+        assert!(radio_form(&store).is_none());
+        assert_eq!(store.state().player.current, Some(0), "the song plays on");
     }
 
     /// The search field owns the keyboard on arrival, so single-key transport
@@ -755,7 +931,7 @@ mod test {
         });
         store.settle();
 
-        for expected in [Tab::Artists, Tab::AllMusic, Tab::Queue] {
+        for expected in [Tab::Artists, Tab::AllMusic, Tab::Radios, Tab::Queue] {
             store.send(Action::Event(key(KeyCode::Tab)), |s| {
                 if let Session::SignedIn(l) = &mut s.session {
                     l.tab = expected;
@@ -990,6 +1166,9 @@ mod test {
         let feature = Feature {
             library: switch.clone(),
             audio: audio(),
+            probe: Arc::new(crate::probe::fake::FakeProbe::failing(
+                "no network in tests",
+            )),
         };
         let mut store = TestStore::new(feature, State::default());
 
@@ -1046,6 +1225,15 @@ mod test {
             anyhow::bail!("not signed in")
         }
         async fn artist_albums(&self, _: &str) -> anyhow::Result<Vec<crate::subsonic::Album>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn radios(&self) -> anyhow::Result<Vec<crate::subsonic::Station>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn create_radio(&self, _: &str, _: &str) -> anyhow::Result<()> {
+            anyhow::bail!("not signed in")
+        }
+        async fn delete_radio(&self, _: &str) -> anyhow::Result<()> {
             anyhow::bail!("not signed in")
         }
         async fn all_tracks(&self, _: u32, _: u32) -> anyhow::Result<Vec<crate::subsonic::Track>> {

@@ -111,6 +111,8 @@ pub enum Action {
         index: usize,
     },
     TogglePause,
+    /// Stop and forget what was playing.
+    Stop,
     Next,
     Previous,
     /// Drop one entry from the queue.
@@ -148,7 +150,12 @@ impl Feature {
             return Effect::none();
         };
 
-        match self.library.stream_url(&track.id) {
+        // A station plays from its own address, not through the server.
+        let url = match &track.live_url {
+            Some(live) => Ok(live.clone()),
+            None => self.library.stream_url(&track.id),
+        };
+        match url {
             Ok(url) => {
                 state.error = None;
                 self.audio.send(Command::Play { track, url });
@@ -184,6 +191,19 @@ impl Reducer for Feature {
                 }
                 self.audio.send(Command::TogglePause);
                 Effect::none()
+            }
+
+            Action::Stop => {
+                if state.current.is_none() {
+                    return Effect::none();
+                }
+                self.audio.send(Command::Stop);
+                state.queue.clear();
+                state.current = None;
+                state.is_playing = false;
+                state.elapsed = Duration::ZERO;
+                state.buffered = None;
+                Effect::send(Action::Delegated(Delegated::PlaybackActive(false)))
             }
 
             Action::Next => {
