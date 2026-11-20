@@ -599,13 +599,14 @@ fn synthwave_drive(frame: u64) -> Canvas {
 
 // ------------------------------------------------------------------ widget --
 
-/// Draws a [`Canvas`] filling as much of `area` as whole-pixel scaling allows,
-/// centred, with the margin left blank.
+/// Draws a [`Canvas`] as large as `area` allows at the canvas's proportions,
+/// centred, with any margin left blank.
 ///
-/// Whole pixels keep pixel art crisp: at 1.5× some source pixels would be one
-/// cell wide and their neighbours two. When the area is smaller than the
-/// canvas itself it falls back to plain nearest-neighbour shrinking, since a
-/// slightly uneven picture beats none.
+/// Scaling is nearest-neighbour by any factor, not only whole ones. Whole
+/// steps kept every pixel the same size, but between 1× and 2× — which is
+/// where a full-screen terminal usually lands — they left the picture at 1×,
+/// a small island in the middle of the screen. A pixel that is now and then
+/// one cell wider than its neighbour is the far smaller cost.
 pub struct SceneWidget<'a> {
     canvas: &'a Canvas,
 }
@@ -623,14 +624,9 @@ impl Widget for SceneWidget<'_> {
         }
         // Half-blocks: a cell is one pixel wide and two tall.
         let (avail_w, avail_h) = (area.width as usize, area.height as usize * 2);
-        let scale = (avail_w / WIDTH).min(avail_h / HEIGHT);
-        let (draw_w, draw_h) = if scale >= 1 {
-            (WIDTH * scale, HEIGHT * scale)
-        } else {
-            // Shrink to fit, keeping the canvas's proportions.
-            let w = avail_w.min(avail_h * WIDTH / HEIGHT).max(1);
-            (w, (w * HEIGHT / WIDTH).max(1))
-        };
+        // As large as fits, keeping the canvas's proportions.
+        let draw_w = avail_w.min(avail_h * WIDTH / HEIGHT).max(1);
+        let draw_h = (draw_w * HEIGHT / WIDTH).clamp(1, avail_h);
         let rows = draw_h.div_ceil(2);
         let x0 = area.x as usize + (avail_w - draw_w) / 2;
         let y0 = area.y as usize + (area.height as usize - rows) / 2;
@@ -759,18 +755,32 @@ mod test {
         }
     }
 
-    /// An in-between size scales by the largest whole factor that fits — here
-    /// 1× — rather than stretching to 1.56× with uneven pixels.
+    /// Regression: scaling only by whole steps left a full-screen terminal —
+    /// between 1× and 2× of the canvas — showing the scene at 1×, a small
+    /// island. An in-between size now fills the width it has.
     #[test]
-    fn in_between_sizes_scale_by_whole_pixels() {
+    fn in_between_sizes_fill_the_space() {
         let canvas = Scene::RainyDesk.render(0);
+        // 150×120 pixels of room: the width runs out first, at 150×84 — that
+        // is 42 rows, centred with 9 blank rows above and below.
         let buf = draw(150, 60, &canvas);
-        // 96 wide, centred in 150: 27 blank columns either side.
-        let row = 20;
-        assert_eq!(buf[(26, row)].symbol(), " ");
-        assert_eq!(buf[(27, row)].symbol(), "▀");
-        assert_eq!(buf[(27 + WIDTH as u16 - 1, row)].symbol(), "▀");
-        assert_eq!(buf[(27 + WIDTH as u16, row)].symbol(), " ");
+        assert_eq!(buf[(0, 9)].symbol(), "▀", "left edge used");
+        assert_eq!(buf[(149, 9)].symbol(), "▀", "right edge used");
+        assert_eq!(buf[(75, 8)].symbol(), " ", "blank above");
+        assert_eq!(buf[(75, 51)].symbol(), " ", "blank below");
+        assert_eq!(buf[(75, 50)].symbol(), "▀", "last row drawn");
+    }
+
+    /// A tall-enough terminal is filled to its height instead.
+    #[test]
+    fn a_wide_terminal_is_filled_to_its_height() {
+        let canvas = Scene::SynthwaveDrive.render(0);
+        // 200×108 pixels: the height runs out first, at 192×108.
+        let buf = draw(200, 54, &canvas);
+        assert_eq!(buf[(3, 0)].symbol(), " ");
+        assert_eq!(buf[(4, 0)].symbol(), "▀", "top row drawn");
+        assert_eq!(buf[(4, 53)].symbol(), "▀", "bottom row drawn");
+        assert_eq!(buf[(196, 0)].symbol(), " ");
     }
 
     #[test]
