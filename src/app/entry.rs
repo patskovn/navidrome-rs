@@ -107,6 +107,9 @@ pub struct State {
     pub help: bool,
     /// Whether the pixel-art scene fills the screen in place of the tabs.
     pub scene: bool,
+    /// How many scenes along from the one the music picked, while the scene
+    /// is open. Reset on closing, so the music picks again next time.
+    pub scene_turn: i32,
     pub picker: Option<DevicePicker>,
     pub session: Session,
     pub player: player::State,
@@ -124,6 +127,7 @@ impl Default for State {
         Self {
             help: false,
             scene: false,
+            scene_turn: 0,
             picker: None,
             session: Session::SignedOut(Box::default()),
             player: player::State::new(),
@@ -400,6 +404,7 @@ impl Reducer for Feature {
 
                 Action::ToggleScene => {
                     state.scene = !state.scene;
+                    state.scene_turn = 0;
                     // The tick is the scene's frame rate. Closing it stops the
                     // tick only if nothing is playing to need it.
                     Self::tick_effect(state.scene || state.player.is_playing)
@@ -520,7 +525,16 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     if state.scene {
         match key.code {
             KeyCode::Esc | KeyCode::Char('v') => return Effect::send(Action::ToggleScene),
-            KeyCode::Tab => return Effect::none(),
+            // Through the scenes, either way; Tab, with no tabs to switch
+            // while the scene covers them, goes forward too.
+            KeyCode::Right | KeyCode::Tab => {
+                state.scene_turn += 1;
+                return Effect::none();
+            }
+            KeyCode::Left => {
+                state.scene_turn -= 1;
+                return Effect::none();
+            }
             _ => {}
         }
     }
@@ -951,13 +965,18 @@ mod test {
         store.send(Action::Event(ctrl(KeyCode::Char('v'))), |_| {});
         store.settle();
 
+        // Tab turns the scene now; it must still not switch the tab beneath.
         for code in [
             KeyCode::Char('x'),
             KeyCode::Tab,
             KeyCode::Down,
             KeyCode::Backspace,
         ] {
-            store.send(Action::Event(key(code)), |_| {});
+            store.send(Action::Event(key(code)), |s| {
+                if code == KeyCode::Tab {
+                    s.scene_turn += 1;
+                }
+            });
             store.settle();
         }
         let library = store.state().library().unwrap();
@@ -971,6 +990,35 @@ mod test {
         store.send(Action::Event(key(KeyCode::Esc)), |_| {});
         store.settle();
         assert!(!scene_open(&store), "Esc leaves the scene");
+    }
+
+    /// ← and → (and Tab) turn through the scenes while one is open; closing
+    /// forgets the turn, so the music chooses again next time.
+    #[tokio::test]
+    async fn arrows_turn_through_the_scenes_and_closing_resets() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(ctrl(KeyCode::Char('v'))), |_| {});
+        store.settle();
+
+        for (code, turn) in [
+            (KeyCode::Right, 1),
+            (KeyCode::Tab, 2),
+            (KeyCode::Left, 1),
+            (KeyCode::Left, 0),
+            (KeyCode::Left, -1),
+        ] {
+            store.send(Action::Event(key(code)), |s| s.scene_turn = turn);
+        }
+        assert_eq!(
+            store.state().library().unwrap().tab,
+            Tab::Albums,
+            "turning scenes must not switch the tab underneath"
+        );
+
+        store.send(Action::Event(key(KeyCode::Esc)), |_| {});
+        store.settle();
+        assert!(!store.state().scene);
+        assert_eq!(store.state().scene_turn, 0, "closing resets the turn");
     }
 
     /// Transport still works under the scene, and `?` still helps.

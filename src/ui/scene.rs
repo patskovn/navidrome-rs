@@ -40,7 +40,7 @@ pub const FPS: u64 = 20;
 /// Frames in one loop: eight seconds.
 pub const FRAMES: u64 = 8 * FPS;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scene {
     /// Night, rain on the window, a lamp, a mug, a sleeping cat.
     RainyDesk,
@@ -85,6 +85,12 @@ impl Scene {
         } else {
             Scene::RainyDesk
         }
+    }
+
+    /// The scene `by` steps along from this one, wrapping either way.
+    pub fn turned(self, by: i32) -> Self {
+        let here = Self::ALL.iter().position(|&s| s == self).unwrap_or(0) as i32;
+        Self::ALL[(here + by).rem_euclid(Self::ALL.len() as i32) as usize]
     }
 
     /// One frame on a `width`×`height` canvas. The core composition keeps its
@@ -1586,6 +1592,18 @@ mod test {
         for y in 0..60 {
             assert_ne!(canvas.get(55, y), [0, 0, 0], "row {y} is unpainted");
         }
+    }
+
+    #[test]
+    fn turning_wraps_both_ways_through_every_scene() {
+        let start = Scene::RainyDesk;
+        let n = Scene::ALL.len() as i32;
+        assert_eq!(start.turned(0), start);
+        assert_eq!(start.turned(1), Scene::SynthwaveDrive);
+        assert_eq!(start.turned(n), start, "a full turn comes back");
+        assert_eq!(start.turned(-1), start.turned(n - 1), "backwards wraps");
+        let seen: std::collections::HashSet<_> = (0..n).map(|k| start.turned(k)).collect();
+        assert_eq!(seen.len(), Scene::ALL.len(), "every scene is reachable");
     }
 
     #[test]

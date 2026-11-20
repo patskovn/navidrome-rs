@@ -75,7 +75,9 @@ pub fn draw(
 fn draw_scene(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     use crate::ui::scene::{Scene, SceneWidget, current_frame};
 
-    let scene = Scene::for_track(store.state().player.current_track());
+    // The music picks the scene; ← and → turn on from there.
+    let scene =
+        Scene::for_track(store.state().player.current_track()).turned(store.state().scene_turn);
     let area = ctx.area();
     ctx.frame()
         .render_widget(SceneWidget::new(scene, current_frame()), area);
@@ -487,6 +489,7 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("", ""),
         ("Ctrl-O", "choose an audio output"),
         ("v Ctrl-V", "the pixel-art scene, fullscreen · Esc leaves"),
+        ("← →", "change scene, while it is open"),
         ("?", "this help"),
         ("q", "quit"),
         ("Ctrl-C", "quit, even while typing"),
@@ -602,6 +605,10 @@ mod tests {
     /// Renders the whole app with the scene open over `title` playing, sized
     /// so the scene draws at exactly 1×.
     fn scene_screen(title: &str) -> ratatui::buffer::Buffer {
+        turned_scene_screen(title, 0)
+    }
+
+    fn turned_scene_screen(title: &str, turn: i32) -> ratatui::buffer::Buffer {
         use std::sync::Arc;
 
         use crate::app::entry::{Feature, Session};
@@ -623,6 +630,7 @@ mod tests {
             State {
                 session: Session::SignedIn(Box::default()),
                 scene: true,
+                scene_turn: turn,
                 player: crate::app::player::State {
                     queue: vec![Track {
                         title: title.into(),
@@ -664,6 +672,12 @@ mod tests {
 
         let drive = scene_screen("Nightwave Plaza");
         assert_ne!(drive[(10, 1)].bg, frame_wood, "synthwave gets the drive");
+
+        // Turned one step, lofi shows the drive and synthwave the desk.
+        let turned = turned_scene_screen("Lofi 24/7", 1);
+        assert_ne!(turned[(10, 1)].bg, frame_wood, "turned on from the desk");
+        let turned = turned_scene_screen("Nightwave Plaza", 1);
+        assert_eq!(turned[(10, 1)].bg, frame_wood, "turned on from the drive");
     }
 
     /// Regression: the row reserved too few columns for its furniture, so a
