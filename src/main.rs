@@ -117,6 +117,12 @@ impl Library for NotSignedIn {
     async fn album_tracks(&self, _: &str) -> anyhow::Result<Vec<subsonic::Track>> {
         anyhow::bail!("not signed in")
     }
+    async fn artists(&self) -> anyhow::Result<Vec<subsonic::Artist>> {
+        anyhow::bail!("not signed in")
+    }
+    async fn artist_albums(&self, _: &str) -> anyhow::Result<Vec<subsonic::Album>> {
+        anyhow::bail!("not signed in")
+    }
     async fn all_tracks(&self, _: u32, _: u32) -> anyhow::Result<Vec<subsonic::Track>> {
         anyhow::bail!("not signed in")
     }

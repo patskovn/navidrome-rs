@@ -13,6 +13,7 @@ use tca::Scope;
 use tca::case;
 
 use crate::app::albums;
+use crate::app::artists;
 use crate::app::auth;
 use crate::app::player;
 use crate::app::songs;
@@ -38,16 +39,18 @@ struct TickId;
 pub enum Tab {
     #[default]
     Albums,
+    Artists,
     AllMusic,
     Queue,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Albums, Tab::AllMusic, Tab::Queue];
+    pub const ALL: [Tab; 4] = [Tab::Albums, Tab::Artists, Tab::AllMusic, Tab::Queue];
 
     pub fn title(self) -> &'static str {
         match self {
             Tab::Albums => "Albums",
+            Tab::Artists => "Artists",
             Tab::AllMusic => "All Music",
             Tab::Queue => "Queue",
         }
@@ -71,6 +74,7 @@ pub enum Session {
 pub struct Library {
     pub tab: Tab,
     pub albums: albums::State,
+    pub artists: artists::State,
     pub songs: songs::State,
     /// Cursor for the Queue tab.
     ///
@@ -136,6 +140,7 @@ impl State {
         };
         let focus = match library.tab {
             Tab::Albums => library.albums.focus,
+            Tab::Artists => library.artists.focus,
             Tab::AllMusic => library.songs.focus,
             // No search field here, so single-key shortcuts stay commands.
             Tab::Queue => return false,
@@ -179,6 +184,7 @@ pub enum Action {
     SignedIn(ServerConfig),
     Auth(auth::Action),
     Albums(albums::Action),
+    Artists(artists::Action),
     Songs(songs::Action),
     Player(player::Action),
     /// Repaint request while audio plays.
@@ -243,6 +249,24 @@ impl Reducer for Feature {
                             Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
                         }
                         albums::Delegated::Noop => Effect::none(),
+                    },
+                ),
+            )
+            .then(
+                Scope::optional(
+                    |s: &mut State| s.library_mut().map(|l| &mut l.artists),
+                    case!(Action::Artists),
+                    artists::Feature {
+                        library: self.library.clone() as SharedLibrary,
+                    },
+                )
+                .on_delegate(
+                    case!(artists::Action::Delegated),
+                    |_s: &mut State, d| match d {
+                        artists::Delegated::Play { tracks, index } => {
+                            Effect::send(Action::Player(player::Action::SetQueue { tracks, index }))
+                        }
+                        artists::Delegated::Noop => Effect::none(),
                     },
                 ),
             )
@@ -332,9 +356,11 @@ impl Reducer for Feature {
 
                 Action::Quit => Effect::quit(),
 
-                Action::Auth(_) | Action::Albums(_) | Action::Songs(_) | Action::Player(_) => {
-                    unreachable!("claimed by a scope")
-                }
+                Action::Auth(_)
+                | Action::Albums(_)
+                | Action::Artists(_)
+                | Action::Songs(_)
+                | Action::Player(_) => unreachable!("claimed by a scope"),
             })
             .reduce(state, action)
     }
@@ -455,6 +481,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
 
     match state.library().map(|l| l.tab) {
         Some(Tab::Albums) => Effect::send(Action::Albums(albums::Action::Event(event))),
+        Some(Tab::Artists) => Effect::send(Action::Artists(artists::Action::Event(event))),
         Some(Tab::AllMusic) => Effect::send(Action::Songs(songs::Action::Event(event))),
         Some(Tab::Queue) => reduce_queue_key(state, key.code),
         None => Effect::none(),
@@ -511,6 +538,16 @@ fn load_if_empty(state: &mut State) -> Effect<Action> {
                 .is_some_and(|l| l.albums.items.items.is_empty()) =>
         {
             Effect::send(Action::Albums(albums::Action::Reload))
+        }
+        // `loaded`, not emptiness: a server with no artists would otherwise be
+        // asked again on every visit. `loading` keeps a quick Tab-around from
+        // firing a second request while the first is out.
+        Some(Tab::Artists)
+            if state
+                .library()
+                .is_some_and(|l| !l.artists.loaded && !l.artists.loading) =>
+        {
+            Effect::send(Action::Artists(artists::Action::Reload))
         }
         Some(Tab::AllMusic)
             if state
@@ -577,7 +614,13 @@ mod test {
     #[tokio::test]
     async fn tab_cycles_through_every_tab() {
         let mut store = signed_in_store();
-        for expected in [Tab::AllMusic, Tab::Queue, Tab::Albums, Tab::AllMusic] {
+        for expected in [
+            Tab::Artists,
+            Tab::AllMusic,
+            Tab::Queue,
+            Tab::Albums,
+            Tab::Artists,
+        ] {
             store.send(Action::Event(key(KeyCode::Tab)), |s| {
                 if let Session::SignedIn(l) = &mut s.session {
                     l.tab = expected;
@@ -586,6 +629,36 @@ mod test {
             store.settle();
             assert_eq!(store.state().library().unwrap().tab, expected);
         }
+    }
+
+    /// The roster is fetched on the first visit only — including when the
+    /// server has no artists, which must not be re-asked on every visit.
+    #[tokio::test]
+    async fn arriving_at_artists_loads_the_roster_once() {
+        let mut store = signed_in_store();
+        store.send(Action::Event(key(KeyCode::Tab)), |s| {
+            if let Session::SignedIn(l) = &mut s.session {
+                l.tab = Tab::Artists;
+            }
+        });
+        assert_eq!(store.pending_len(), 1, "arriving should ask for the roster");
+        store.settle();
+        assert!(store.state().library().unwrap().artists.loaded);
+
+        // Round the tabs and back: an empty roster is still a loaded one.
+        for _ in 0..Tab::ALL.len() {
+            store.send(Action::Event(key(KeyCode::Tab)), |s| {
+                if let Session::SignedIn(l) = &mut s.session {
+                    let i = Tab::ALL.iter().position(|t| *t == l.tab).unwrap();
+                    l.tab = Tab::ALL[(i + 1) % Tab::ALL.len()];
+                }
+            });
+            if store.state().library().unwrap().tab == Tab::Artists {
+                assert_eq!(store.pending_len(), 0, "the roster was fetched again");
+            }
+            store.settle();
+        }
+        assert_eq!(store.state().library().unwrap().tab, Tab::Artists);
     }
 
     /// The search field owns the keyboard on arrival, so single-key transport
@@ -682,7 +755,7 @@ mod test {
         });
         store.settle();
 
-        for expected in [Tab::AllMusic, Tab::Queue] {
+        for expected in [Tab::Artists, Tab::AllMusic, Tab::Queue] {
             store.send(Action::Event(key(KeyCode::Tab)), |s| {
                 if let Session::SignedIn(l) = &mut s.session {
                     l.tab = expected;
@@ -967,6 +1040,12 @@ mod test {
             anyhow::bail!("not signed in")
         }
         async fn album_tracks(&self, _: &str) -> anyhow::Result<Vec<crate::subsonic::Track>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn artists(&self) -> anyhow::Result<Vec<crate::subsonic::Artist>> {
+            anyhow::bail!("not signed in")
+        }
+        async fn artist_albums(&self, _: &str) -> anyhow::Result<Vec<crate::subsonic::Album>> {
             anyhow::bail!("not signed in")
         }
         async fn all_tracks(&self, _: u32, _: u32) -> anyhow::Result<Vec<crate::subsonic::Track>> {

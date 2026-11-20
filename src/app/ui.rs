@@ -16,7 +16,7 @@ use crate::app::entry::Action;
 use crate::app::entry::State;
 use crate::app::entry::Tab;
 use crate::app::truncate;
-use crate::app::{albums, auth, songs};
+use crate::app::{albums, artists, auth, songs};
 use crate::audio::SampleTap;
 use crate::subsonic::format_duration;
 use crate::ui::DrawingContext;
@@ -142,6 +142,14 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
             store.scope(
                 |s: &State| &s.library().expect("signed in").albums,
                 Action::Albums,
+            ),
+            playing.as_deref(),
+        ),
+        Tab::Artists => artists::ui(
+            &mut ctx.with_area(inner),
+            store.scope(
+                |s: &State| &s.library().expect("signed in").artists,
+                Action::Artists,
             ),
             playing.as_deref(),
         ),
@@ -439,8 +447,8 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("Tab", "switch tab"),
         ("↑ ↓", "move between the search field and the list"),
         ("j k", "move in a list"),
-        ("↵", "open an album, or play a track"),
-        ("Esc ←", "back out of an open album"),
+        ("↵", "open an artist or album, or play a track"),
+        ("Esc ←", "back out one level"),
         ("d", "drop a track, in the Queue tab"),
         ("", ""),
         ("space", "play / pause"),

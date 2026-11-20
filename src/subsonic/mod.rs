@@ -30,6 +30,16 @@ pub struct Album {
     pub cover_art: Option<String>,
 }
 
+/// An album artist, as listed by `getArtists`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Artist {
+    pub id: String,
+    pub name: String,
+    pub album_count: Option<i64>,
+    /// Id to fetch artwork with; not the image itself.
+    pub cover_art: Option<String>,
+}
+
 /// A single track.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Track {
@@ -98,6 +108,13 @@ pub trait Library: Send + Sync + 'static {
     /// Tracks of one album, in disc/track order.
     async fn album_tracks(&self, album_id: &str) -> anyhow::Result<Vec<Track>>;
 
+    /// Every album artist on the server, in the server's order. Subsonic
+    /// returns the whole roster in one response, so there is no paging.
+    async fn artists(&self) -> anyhow::Result<Vec<Artist>>;
+
+    /// One artist's albums, oldest first.
+    async fn artist_albums(&self, artist_id: &str) -> anyhow::Result<Vec<Album>>;
+
     /// A page of "all music". Subsonic has no true "all songs" endpoint, so
     /// this is served by walking albums — see the implementation.
     async fn all_tracks(&self, offset: u32, limit: u32) -> anyhow::Result<Vec<Track>>;
@@ -160,6 +177,16 @@ impl Library for SwappableLibrary {
         library.album_tracks(&id).await
     }
 
+    async fn artists(&self) -> anyhow::Result<Vec<Artist>> {
+        self.current().artists().await
+    }
+
+    async fn artist_albums(&self, artist_id: &str) -> anyhow::Result<Vec<Album>> {
+        let library = self.current();
+        let id = artist_id.to_string();
+        library.artist_albums(&id).await
+    }
+
     async fn all_tracks(&self, offset: u32, limit: u32) -> anyhow::Result<Vec<Track>> {
         self.current().all_tracks(offset, limit).await
     }
@@ -189,6 +216,7 @@ pub mod fake {
     /// In-memory [`Library`] for reducer tests.
     #[derive(Default)]
     pub struct FakeLibrary {
+        pub artists: Vec<Artist>,
         pub albums: Vec<Album>,
         pub tracks: Vec<Track>,
         pub fail_ping: bool,
@@ -232,6 +260,16 @@ pub mod fake {
         async fn album_tracks(&self, _album_id: &str) -> anyhow::Result<Vec<Track>> {
             self.record("album_tracks");
             Ok(self.tracks.clone())
+        }
+
+        async fn artists(&self) -> anyhow::Result<Vec<Artist>> {
+            self.record("artists");
+            Ok(self.artists.clone())
+        }
+
+        async fn artist_albums(&self, _artist_id: &str) -> anyhow::Result<Vec<Album>> {
+            self.record("artist_albums");
+            Ok(self.albums.clone())
         }
 
         async fn all_tracks(&self, _offset: u32, _limit: u32) -> anyhow::Result<Vec<Track>> {

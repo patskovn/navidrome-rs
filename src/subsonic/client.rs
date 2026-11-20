@@ -4,10 +4,12 @@ use opensubsonic::AlbumListType;
 use opensubsonic::Auth;
 use opensubsonic::Client;
 use opensubsonic::data::AlbumId3;
+use opensubsonic::data::ArtistId3;
 use opensubsonic::data::Child;
 
 use super::Album;
 use super::AlbumSort;
+use super::Artist;
 use super::Library;
 use super::SearchResults;
 use super::Track;
@@ -39,6 +41,15 @@ fn album_from(value: AlbumId3) -> Album {
         duration: value.duration,
         genre: value.genre,
         play_count: value.play_count,
+        cover_art: value.cover_art,
+    }
+}
+
+fn artist_from(value: ArtistId3) -> Artist {
+    Artist {
+        id: value.id,
+        name: value.name,
+        album_count: value.album_count,
         cover_art: value.cover_art,
     }
 }
@@ -105,6 +116,37 @@ impl Library for OpenSubsonicLibrary {
         let mut tracks: Vec<Track> = album.song.into_iter().map(track_from).collect();
         tracks.sort_by_key(|t| t.track_no.unwrap_or(i32::MAX));
         Ok(tracks)
+    }
+
+    async fn artists(&self) -> anyhow::Result<Vec<Artist>> {
+        let artists = self
+            .client
+            .get_artists(None)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .context("listing artists")?;
+        // The server groups artists under index letters, already sorted with
+        // its ignored articles ("The", "A") applied. Flattening keeps that
+        // order rather than re-sorting on the raw name.
+        Ok(artists
+            .index
+            .into_iter()
+            .flat_map(|index| index.artist)
+            .map(artist_from)
+            .collect())
+    }
+
+    async fn artist_albums(&self, artist_id: &str) -> anyhow::Result<Vec<Album>> {
+        let artist = self
+            .client
+            .get_artist(artist_id)
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
+            .with_context(|| format!("loading artist {artist_id}"))?;
+        let mut albums: Vec<Album> = artist.album.into_iter().map(album_from).collect();
+        // A discography reads in release order; undated albums go last.
+        albums.sort_by_key(|a| a.year.unwrap_or(i32::MAX));
+        Ok(albums)
     }
 
     /// Subsonic has no "every song" endpoint, so "all music" is assembled by
@@ -195,6 +237,22 @@ mod test {
         assert_eq!(album.artist.as_deref(), Some("Miles Davis"));
         assert_eq!(album.year, Some(1959));
         assert_eq!(album.song_count, Some(5));
+    }
+
+    #[test]
+    fn maps_artist_fields() {
+        let json = serde_json::json!({
+            "id": "ar-1",
+            "name": "Miles Davis",
+            "albumCount": 12,
+            "coverArt": "ar-1",
+        });
+        let artist = artist_from(serde_json::from_value::<ArtistId3>(json).unwrap());
+
+        assert_eq!(artist.id, "ar-1");
+        assert_eq!(artist.name, "Miles Davis");
+        assert_eq!(artist.album_count, Some(12));
+        assert_eq!(artist.cover_art.as_deref(), Some("ar-1"));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 pub mod albums;
+pub mod artists;
 pub mod auth;
 pub mod entry;
 pub mod player;

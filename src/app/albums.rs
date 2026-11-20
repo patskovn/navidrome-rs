@@ -37,6 +37,110 @@ pub struct Detail {
     pub cover: Option<Cover>,
 }
 
+/// What a key pressed inside an open album means to whichever tab hosts it.
+///
+/// The Albums and Artists tabs both open albums. The detail decides what a key
+/// *means*; the host decides what "back" and "play" do from where it stands —
+/// back to the album list in one, back to the artist's albums in the other.
+#[derive(Debug, PartialEq)]
+pub enum DetailKey {
+    Back,
+    /// Play `tracks[index]`, with the rest of the album queued behind it.
+    Play {
+        tracks: Vec<Track>,
+        index: usize,
+    },
+    /// Consumed here (cursor moved), or ignored.
+    Handled,
+}
+
+impl Detail {
+    /// A detail for `album` whose tracks are still on their way.
+    pub fn opening(album: Album) -> Self {
+        Self {
+            album,
+            loading: true,
+            ..Default::default()
+        }
+    }
+
+    pub fn key(&mut self, code: KeyCode) -> DetailKey {
+        match code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Backspace => DetailKey::Back,
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.selected = (self.selected + 1).min(self.tracks.len().saturating_sub(1));
+                DetailKey::Handled
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = self.selected.saturating_sub(1);
+                DetailKey::Handled
+            }
+            // The whole album becomes the queue, starting here, so the rest
+            // plays on after it.
+            KeyCode::Enter if !self.tracks.is_empty() => DetailKey::Play {
+                tracks: self.tracks.clone(),
+                index: self.selected,
+            },
+            _ => DetailKey::Handled,
+        }
+    }
+
+    /// Installs fetched tracks, unless the user has backed out of — or moved
+    /// on from — the album they were fetched for while the request was in
+    /// flight.
+    pub fn land_tracks(slot: &mut Option<Detail>, album: Album, tracks: Vec<Track>) {
+        if let Some(existing) = slot
+            && existing.album.id == album.id
+        {
+            let cover = existing.cover.take();
+            *existing = Detail {
+                album,
+                tracks,
+                selected: 0,
+                loading: false,
+                cover,
+            };
+        }
+    }
+
+    /// Installs artwork, ignoring it for an album the user has already left.
+    pub fn land_cover(slot: &mut Option<Detail>, album_id: &str, cover: Cover) {
+        if let Some(detail) = slot
+            && detail.album.id == album_id
+        {
+            detail.cover = Some(cover);
+        }
+    }
+}
+
+/// Fetches an album's artwork and tracks, reporting each through the host
+/// tab's own actions.
+pub fn fetch_detail<A: Send + 'static>(
+    library: SharedLibrary,
+    album: Album,
+    cover_loaded: impl FnOnce(String, Box<Cover>) -> A + Send + 'static,
+    tracks_loaded: impl FnOnce(Box<Album>, Vec<Track>) -> A + Send + 'static,
+    failed: impl FnOnce(String) -> A + Send + 'static,
+) -> Effect<A> {
+    Effect::run(move |send| async move {
+        // Artwork first: it is the slower of the two and the panel has a hole
+        // in it until it lands.
+        if let Some(art_id) = album.cover_art.clone() {
+            match library.cover_art(&art_id).await {
+                Ok(bytes) => match Cover::decode(&bytes) {
+                    Ok(cover) => send.send(cover_loaded(album.id.clone(), Box::new(cover))),
+                    Err(err) => log::warn!("undecodable artwork: {err:#}"),
+                },
+                Err(err) => log::warn!("no artwork for {}: {err:#}", album.id),
+            }
+        }
+        match library.album_tracks(&album.id).await {
+            Ok(tracks) => send.send(tracks_loaded(Box::new(album), tracks)),
+            Err(err) => send.send(failed(format!("{err:#}"))),
+        }
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Row(pub Album);
 
@@ -197,62 +301,23 @@ impl Reducer for Feature {
 
             Action::OpenAlbum(album) => {
                 let album = *album;
-                state.detail = Some(Detail {
-                    album: album.clone(),
-                    loading: true,
-                    ..Default::default()
-                });
-                let library = library.clone();
-                Effect::run(move |send| async move {
-                    // Artwork first: it is the slower of the two and the panel
-                    // has a hole in it until it lands.
-                    if let Some(art_id) = album.cover_art.clone() {
-                        match library.cover_art(&art_id).await {
-                            Ok(bytes) => match Cover::decode(&bytes) {
-                                Ok(cover) => send.send(Action::CoverLoaded {
-                                    album_id: album.id.clone(),
-                                    cover: Box::new(cover),
-                                }),
-                                Err(err) => log::warn!("undecodable artwork: {err:#}"),
-                            },
-                            Err(err) => log::warn!("no artwork for {}: {err:#}", album.id),
-                        }
-                    }
-                    match library.album_tracks(&album.id).await {
-                        Ok(tracks) => send.send(Action::DetailLoaded {
-                            album: Box::new(album),
-                            tracks,
-                        }),
-                        Err(err) => send.send(Action::Failed(format!("{err:#}"))),
-                    }
-                })
+                state.detail = Some(Detail::opening(album.clone()));
+                fetch_detail(
+                    library.clone(),
+                    album,
+                    |album_id, cover| Action::CoverLoaded { album_id, cover },
+                    |album, tracks| Action::DetailLoaded { album, tracks },
+                    Action::Failed,
+                )
             }
 
             Action::DetailLoaded { album, tracks } => {
-                let album = *album;
-                // The user may have backed out while this was in flight.
-                if let Some(existing) = &state.detail
-                    && existing.album.id == album.id
-                {
-                    let cover = existing.cover.clone();
-                    state.detail = Some(Detail {
-                        album,
-                        tracks,
-                        selected: 0,
-                        loading: false,
-                        cover,
-                    });
-                }
+                Detail::land_tracks(&mut state.detail, *album, tracks);
                 Effect::none()
             }
 
             Action::CoverLoaded { album_id, cover } => {
-                // Ignore artwork for an album the user has already left.
-                if let Some(detail) = &mut state.detail
-                    && detail.album.id == album_id
-                {
-                    detail.cover = Some(*cover);
-                }
+                Detail::land_cover(&mut state.detail, &album_id, *cover);
                 Effect::none()
             }
 
@@ -280,28 +345,12 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
 
     // An open album takes the whole tab: its track list gets the keyboard.
     if let Some(detail) = &mut state.detail {
-        return match key.code {
-            KeyCode::Esc | KeyCode::Left | KeyCode::Backspace => Effect::send(Action::CloseDetail),
-            KeyCode::Down | KeyCode::Char('j') => {
-                detail.selected = (detail.selected + 1).min(detail.tracks.len().saturating_sub(1));
-                Effect::none()
+        return match detail.key(key.code) {
+            DetailKey::Back => Effect::send(Action::CloseDetail),
+            DetailKey::Play { tracks, index } => {
+                Effect::send(Action::Delegated(Delegated::Play { tracks, index }))
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                detail.selected = detail.selected.saturating_sub(1);
-                Effect::none()
-            }
-            KeyCode::Enter => {
-                if detail.tracks.is_empty() {
-                    return Effect::none();
-                }
-                // The whole album becomes the queue, starting here, so the rest
-                // plays on after it.
-                Effect::send(Action::Delegated(Delegated::Play {
-                    tracks: detail.tracks.clone(),
-                    index: detail.selected,
-                }))
-            }
-            _ => Effect::none(),
+            DetailKey::Handled => Effect::none(),
         };
     }
 
@@ -398,7 +447,7 @@ fn status_line(loading: bool, error: &Option<String>) -> Option<ratatui::text::L
 /// squeezing the track titles.
 const INFO_WIDTH: u16 = 34;
 
-fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail, playing: Option<&str>) {
+pub fn draw_detail(ctx: &mut crate::ui::DrawingContext, detail: &Detail, playing: Option<&str>) {
     use ratatui::layout::Constraint;
     use ratatui::layout::Layout;
 

@@ -42,7 +42,8 @@ src/
 ├── app/             tca features
 │   ├── entry.rs     root: session gate, tabs, global keys, visualiser tick
 │   ├── auth.rs      sign-in form
-│   ├── albums.rs    Albums tab
+│   ├── albums.rs    Albums tab; also the album detail the Artists tab reuses
+│   ├── artists.rs   Artists tab: local filter, artist → albums → tracks
 │   ├── songs.rs     All Music tab
 │   ├── player.rs    queue and transport
 │   └── ui.rs        drawing for the root feature
@@ -231,7 +232,7 @@ Reducers are testable because the server sits behind the `Library` trait; use
 
 ## Not done yet
 
-No playlists, no artist browsing, no shuffle/repeat. The queue can be viewed
+No playlists, no shuffle/repeat. The queue can be viewed
 and pruned but not reordered. Seek is implemented in the
 engine (`audio::Command::Seek`) but not bound to a key. "All Music" loads a page
 of albums and flattens them rather than paging by track, because Subsonic has no
