@@ -76,9 +76,9 @@ fn draw_scene(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     use crate::ui::scene::{Scene, SceneWidget, current_frame};
 
     let scene = Scene::for_track(store.state().player.current_track());
-    let canvas = scene.render(current_frame());
     let area = ctx.area();
-    ctx.frame().render_widget(SceneWidget::new(&canvas), area);
+    ctx.frame()
+        .render_widget(SceneWidget::new(scene, current_frame()), area);
 }
 
 fn draw_sign_in(ctx: &mut DrawingContext, store: &Store<State, Action>) {

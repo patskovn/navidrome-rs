@@ -264,7 +264,13 @@ Reducers are testable because the server sits behind the `Library` trait; use
   every moving part turns a whole number of times per loop with phase taken in
   integers (`phase()`), so the loop is seamless by construction;
   `a_scene_loops_exactly` holds new parts to it. Scenes are original art —
-  keep them that way rather than recreating anyone's characters. The scene
+  keep them that way rather than recreating anyone's characters. Scenes are
+  *composed for the space*, not stretched: `scene::fit` picks the largest whole
+  pixel size at which the 96×54 core fits, the canvas is the whole area at that
+  size, the core sits bottom-centre, and the rest is furnished procedurally —
+  wall to the ceiling, shelves, gallery, lights and more desk on the rainy
+  scene; sky, peaks, palms on the drive. New furniture belongs in the margins
+  and must keep to whole cycles per loop like everything else. The scene
   animates on the visualiser tick, so while it is open the tick stays alive
   even with nothing playing. `NAVIDROME_RS_SCENE_DIR=… cargo test
   preview_scenes -- --ignored` writes frames as PNGs for looking at.
