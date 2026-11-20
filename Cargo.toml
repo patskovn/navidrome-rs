@@ -1,9 +1,10 @@
 [package]
 name = "navidrome-rs"
 description = "A tui client for connecting to subsonic media servers"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/patskovn/navidrome-rs"
 
 [dependencies]
 anyhow = "1.0.104"
