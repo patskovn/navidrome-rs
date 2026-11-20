@@ -406,23 +406,13 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
         pendant(c, frame, 66, -oy + 3, -2);
     }
 
-    // The desk spans the canvas; its grain is hashed per absolute column.
+    // The desk spans the canvas: its top, a front apron, and below that the
+    // room carries on under it.
     c.origin(0, 0);
     c.rect(0, desk, w, h - desk, WOOD_DARK);
     c.rect(0, desk, w, 3, WOOD);
     c.rect(0, desk, w, 1, WOOD_EDGE);
-    // Grain every third row, however far down the desk now reaches.
-    for (line, row) in (desk + 5..h).step_by(3).enumerate() {
-        let line = line as u64;
-        let mut x = 0;
-        while x < w {
-            let len = 8 + (hash_at(x - ox, line * 10) % 18) as i32;
-            if !hash_at(x - ox, line * 10 + 7).is_multiple_of(3) {
-                c.rect(x, row, len, 1, rgb(0x553627));
-            }
-            x += len + 4 + (hash_at(x - ox, line * 10 + 3) % 10) as i32;
-        }
-    }
+    under_desk(c, frame, ox, desk, w, h);
 
     // Desk things beside the core.
     if left >= 28 {
@@ -445,6 +435,180 @@ fn rainy_desk(c: &mut Canvas, frame: u64) {
     // --- The core's desk: light, books, mug, lamp, cat. ---
     c.origin(ox, oy);
     desk_core(c, frame);
+}
+
+/// Rows of desk front between the desktop and the space beneath it.
+const APRON: i32 = 4;
+
+/// Below the desktop: the apron with a drawer, legs, the back wall in shadow,
+/// a floor with a rug, and a chair, a yarn basket and slippers on it.
+///
+/// Laid out from whatever height is left. With too little, the space is
+/// all apron and wood, as the desk used to be; items that would not fit are
+/// left out rather than squashed.
+fn under_desk(c: &mut Canvas, frame: u64, ox: i32, desk: i32, w: i32, h: i32) {
+    let apron_top = desk + 3;
+    let space_top = apron_top + APRON;
+    let room = h - space_top;
+    // A few rows only: leave it as plain desk front.
+    if room < 6 {
+        return;
+    }
+
+    // Apron: a grain line, and a drawer under the left of the core.
+    let mut x = 0;
+    while x < w {
+        let len = 8 + (hash_at(x - ox, 1) % 18) as i32;
+        if !hash_at(x - ox, 8).is_multiple_of(3) {
+            c.rect(x, apron_top + 2, len, 1, rgb(0x553627));
+        }
+        x += len + 4 + (hash_at(x - ox, 4) % 10) as i32;
+    }
+    c.rect(ox + 8, apron_top, 26, APRON, rgb(0x56382a));
+    c.rect(ox + 8, apron_top, 26, 1, rgb(0x6b4632));
+    c.rect(ox + 20, apron_top + 1, 3, 2, rgb(0xd9a441));
+    c.set(ox + 20, apron_top + 1, rgb(0xf3cf6e));
+    c.rect(0, space_top - 1, w, 1, rgb(0x2e1d15));
+
+    // The floor takes the bottom two fifths of the space, at least five rows.
+    let floor = h - (room * 2 / 5).max(5);
+    let skirting = floor - 2;
+
+    // The back wall, in the desk's shadow: darkest just under the desktop.
+    c.gradient(0, w, space_top, skirting, &[rgb(0x0e0a1a), rgb(0x1d1630)]);
+    for x in 0..w {
+        if (x - ox - 3).rem_euclid(6) == 0 {
+            for y in space_top..skirting {
+                c.blend(x, y, rgb(0x3a2d5c), 0.12);
+            }
+        }
+    }
+    c.rect(0, skirting, w, 2, rgb(0x2a2035));
+    c.rect(0, skirting, w, 1, rgb(0x3a2d48));
+
+    // Floorboards: planks three rows deep, their joints staggered.
+    for y in floor..h {
+        let plank = (y - floor) / 3;
+        let base = if plank % 2 == 0 {
+            rgb(0x4a3127)
+        } else {
+            rgb(0x533629)
+        };
+        for x in 0..w {
+            c.set(x, y, base);
+        }
+        if (y - floor) % 3 == 0 {
+            c.rect(0, y, w, 1, rgb(0x3a261e));
+        }
+        let offset = (hash(plank as u64 + 77) % 23) as i32;
+        let mut jx = offset - ox.rem_euclid(23);
+        while jx < w {
+            c.set(jx, y, rgb(0x3a261e));
+            jx += 23 + (hash_at(jx, plank as u64 * 31) % 9) as i32;
+        }
+    }
+
+    // The rug, under the core: a border, a diamond band, fringe at the ends.
+    let rug_top = floor + 1;
+    let rug_bottom = h - 1;
+    if rug_bottom - rug_top >= 2 {
+        let (rx0, rx1) = (ox + 10, ox + 86);
+        c.rect(rx0, rug_top, rx1 - rx0, rug_bottom - rug_top, rgb(0x7a2e43));
+        c.rect(rx0, rug_top, rx1 - rx0, 1, rgb(0xc46a80));
+        c.rect(rx0, rug_bottom - 1, rx1 - rx0, 1, rgb(0xc46a80));
+        let mid = (rug_top + rug_bottom) / 2;
+        for x in rx0 + 2..rx1 - 2 {
+            let d = (x - rx0).rem_euclid(8) - 4;
+            for y in rug_top + 1..rug_bottom - 1 {
+                if (y - mid).abs() == d.abs() % 4 {
+                    c.set(x, y, rgb(0xd99a5b));
+                }
+            }
+        }
+        for y in rug_top..rug_bottom {
+            if (y - rug_top) % 2 == 0 {
+                c.set(rx0 - 1, y, rgb(0xe8d8c0));
+                c.set(rx1, y, rgb(0xe8d8c0));
+            }
+        }
+    }
+
+    // Legs, at the core's corners and at the canvas's ends.
+    let leg = rgb(0x3a2419);
+    let mut legs = vec![ox + 1, ox + 92];
+    if ox >= 8 {
+        legs.extend([1, w - 4]);
+    }
+    for x in legs {
+        c.rect(x, space_top, 3, skirting + 1 - space_top, leg);
+        c.rect(x, space_top, 1, skirting + 1 - space_top, rgb(0x4a2f22));
+    }
+
+    // A basket of yarn, a strand wandering off across the floor.
+    if floor - space_top >= 6 {
+        let (bx, by) = (ox + 58, floor - 3);
+        for (k, (dx, r, color)) in [
+            (3.0, 2.6, 0xd1495b),
+            (7.0, 2.4, 0x7ee0d6),
+            (5.0, 2.2, 0xe9c46a),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            c.disc(
+                bx as f64 + dx,
+                by as f64 - 0.5 - k as f64 * 0.3,
+                r,
+                rgb(color),
+            );
+        }
+        c.rect(bx, by, 11, 5, rgb(0xb08a5a));
+        for x in (bx..bx + 11).step_by(2) {
+            c.rect(x, by + 1, 1, 3, rgb(0x8c6a42));
+        }
+        c.rect(bx, by, 11, 1, rgb(0xc9a46e));
+        // The strand stirs, as if the cat had only just let go of it.
+        let stir = (phase(frame, 1) * TAU).sin();
+        for i in 0..14 {
+            let x = bx + 11 + i;
+            let y = by + 2 + ((i as f64 * 0.7 + stir).sin() * 1.2).round() as i32 + i / 5;
+            c.set(x, y.min(h - 1), rgb(0xd1495b));
+        }
+    }
+
+    // Slippers, side by side on the rug.
+    if h - floor >= 5 {
+        let (sx, sy) = (ox + 74, floor + 1);
+        for dx in [0, 6] {
+            c.rect(sx + dx, sy + 1, 5, 2, rgb(0xe8a0b4));
+            c.rect(sx + dx, sy + 1, 5, 1, rgb(0xf6c6d4));
+            c.rect(sx + dx + 1, sy, 3, 1, rgb(0xf6c6d4));
+        }
+    }
+
+    // A small wooden chair, pushed in under the desk, standing on the rug.
+    // Its back is as tall as the space allows, up to eight rows; under four
+    // it would not read as a chair, so it is left out.
+    let seat = floor - 5;
+    let back = (seat - space_top - 1).min(8);
+    let back_top = seat - back;
+    if back >= 4 {
+        let (cx, wood, dark) = (ox + 30, rgb(0x8a5a3c), rgb(0x5c3b28));
+        // Back: two posts and two rails.
+        c.rect(cx, back_top, 2, seat - back_top, dark);
+        c.rect(cx + 12, back_top, 2, seat - back_top, dark);
+        c.rect(cx, back_top, 14, 2, wood);
+        if back >= 6 {
+            c.rect(cx, back_top + 4, 14, 1, wood);
+        }
+        // Seat, and legs down to the floor.
+        c.rect(cx - 1, seat, 16, 2, wood);
+        c.rect(cx - 1, seat, 16, 1, rgb(0xa06c4a));
+        for lx in [cx, cx + 12] {
+            c.rect(lx, seat + 2, 2, floor + 2 - (seat + 2), dark);
+        }
+        c.rect(cx + 2, seat + 4, 10, 1, dark);
+    }
 }
 
 fn window(c: &mut Canvas, frame: u64) {
@@ -1419,6 +1583,28 @@ mod test {
                     h.div_ceil(3)
                 );
             }
+        }
+    }
+
+    /// Under the desk is a room, not more desk: a floor along the bottom, the
+    /// rug on it, and the chair in front of the shadowed wall.
+    #[test]
+    fn there_is_a_room_under_the_desk() {
+        for (w, h) in [(180usize, 88usize), (110, 120), (300, 70)] {
+            let canvas = Scene::RainyDesk.render(0, w, h);
+            let ox = (w - WIDTH) / 2;
+            let bottom: Vec<_> = (0..w).map(|x| canvas.get(x, h - 2)).collect();
+            assert!(
+                bottom.contains(&rgb(0x7a2e43)) || bottom.contains(&rgb(0xc46a80)),
+                "{w}x{h}: no rug along the bottom"
+            );
+            assert!(
+                !bottom.iter().all(|&p| p == rgb(0x4a2f22)),
+                "{w}x{h}: the bottom is still desk"
+            );
+            let chair =
+                (0..h).any(|y| (ox + 29..ox + 46).any(|x| canvas.get(x, y) == rgb(0x8a5a3c)));
+            assert!(chair, "{w}x{h}: no chair");
         }
     }
 
