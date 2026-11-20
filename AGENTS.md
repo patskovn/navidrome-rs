@@ -189,8 +189,10 @@ Reducers are testable because the server sits behind the `Library` trait; use
   accent is used from a dozen draw sites and threading a flag to all of them
   would buy nothing. It defaults to *focused*, so a terminal that never reports
   (Terminal.app, tmux without `focus-events on`) looks normal rather than
-  permanently grey. Only one test may touch that flag; a second would race it
-  under the parallel runner. Note `ACCENT_UNFOCUSED` is `Gray` rather than the
+  permanently grey. Every test that sets that flag — the focus test,
+  and any that draws the whole app, since `ui::draw` sets it — holds
+  `theme::focus_guard()` while it does, or the parallel runner lets one flip
+  it under another (seen once as a failure in the focus test). Note `ACCENT_UNFOCUSED` is `Gray` rather than the
   darker `DIM`: the accent also backs the selected row through `selection()`,
   which reverses it into a background.
 - **Download progress is bytes, drawn against time.** `DownloadProgress`

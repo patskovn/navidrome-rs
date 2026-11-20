@@ -16,6 +16,15 @@ use ratatui::style::Style;
 /// tmux without `focus-events on`) simply stays bright.
 static FOCUSED: AtomicBool = AtomicBool::new(true);
 
+/// Tests that draw the whole app set the focus flag (through `ui::draw`),
+/// and one test checks what the flag does: they all hold this while they
+/// touch it, or the parallel runner lets one flip it under another.
+#[cfg(test)]
+pub fn focus_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A single place for colours, so the palette can be changed without hunting
 /// through widgets.
 pub struct Theme;

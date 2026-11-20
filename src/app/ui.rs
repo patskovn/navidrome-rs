@@ -602,7 +602,10 @@ mod tests {
         let mut spectrum = Spectrum::new();
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).expect("test backend");
         terminal
-            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .draw(|frame| {
+                let _focus = crate::ui::theme::focus_guard();
+                draw(frame, store.clone(), &tap, &mut spectrum)
+            })
             .expect("draw");
 
         let buffer = terminal.backend().buffer();
@@ -660,7 +663,10 @@ mod tests {
         let (w, h) = (WIDTH as u16, (HEIGHT / 2) as u16 + PLAYER_HEIGHT);
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test backend");
         terminal
-            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .draw(|frame| {
+                let _focus = crate::ui::theme::focus_guard();
+                draw(frame, store.clone(), &tap, &mut spectrum)
+            })
             .expect("draw");
         terminal.backend().buffer().clone()
     }
@@ -770,7 +776,10 @@ mod tests {
         let mut spectrum = Spectrum::new();
         let mut terminal = Terminal::new(TestBackend::new(76, 20)).expect("test backend");
         terminal
-            .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+            .draw(|frame| {
+                let _focus = crate::ui::theme::focus_guard();
+                draw(frame, store.clone(), &tap, &mut spectrum)
+            })
             .expect("draw");
 
         let buffer = terminal.backend().buffer();
@@ -835,7 +844,10 @@ mod tests {
                 },
             );
             terminal
-                .draw(|frame| draw(frame, store.clone(), &tap, &mut spectrum))
+                .draw(|frame| {
+                    let _focus = crate::ui::theme::focus_guard();
+                    draw(frame, store.clone(), &tap, &mut spectrum)
+                })
                 .expect("draw");
             let buffer = terminal.backend().buffer();
             println!("\n{label}");
@@ -912,11 +924,12 @@ mod tests {
 
     /// End to end: losing window focus reaches the accent a widget draws with.
     ///
-    /// The only test that touches the focus flag — it is process-global, so a
-    /// second one would race this under the default parallel runner.
+    /// The flag is process-global, and every test drawing the whole app sets
+    /// it: they all hold `focus_guard`, so none can flip it under this one.
     #[test]
     fn losing_window_focus_greys_the_bar() {
         // The played part of the bar is the accent; cell 5 is its first.
+        let _focus = crate::ui::theme::focus_guard();
         let played = |focused| {
             Theme::set_focused(focused);
             buffer(30, 1.0)[(5, 0)].style()
