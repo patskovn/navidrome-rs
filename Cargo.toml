@@ -15,7 +15,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 log = "0.4.33"
 opensubsonic = "0.4.0"
 ratatui = "0.30"
-reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2", "charset", "system-proxy"] }
+reqwest = { version = "0.13", default-features = false, features = ["default-tls", "http2", "charset", "system-proxy", "query", "json"] }
 rodio = "0.22.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

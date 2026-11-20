@@ -458,7 +458,8 @@ fn draw_help(frame: &mut Frame, area: ratatui::layout::Rect) {
         ("↵", "open an artist or album, or play a track"),
         ("Esc ←", "back out one level"),
         ("d", "drop a track, in the Queue tab"),
-        ("a d", "add / delete a station, in the Radios tab"),
+        ("s /", "search radio-browser.info, in the Radios tab"),
+        ("a d", "add by URL / delete a station, in the Radios tab"),
         ("", ""),
         ("space", "play / pause"),
         ("n p", "next / previous track"),
@@ -538,6 +539,7 @@ mod tests {
                 library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                 audio,
                 probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
+                directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
             },
             State {
                 session: Session::SignedIn(Box::new(Library {
@@ -622,6 +624,7 @@ mod tests {
                 library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                 audio,
                 probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
+                directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
             },
             State {
                 session: Session::SignedIn(Box::new(Library {
@@ -709,6 +712,7 @@ mod tests {
                     library: Arc::new(SwappableLibrary::new(Arc::new(FakeLibrary::default()))),
                     audio: (*audio).clone(),
                     probe: Arc::new(crate::probe::fake::FakeProbe::failing("offline")),
+                    directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
                 },
                 State {
                     session: Session::SignedIn(Box::new(library)),

@@ -14,9 +14,15 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEventKind;
 use tca::Effect;
 use tca::Reducer;
+use tca::ReducerExt;
+use tca::Scope;
+use tca::case;
 
 use crate::app::DEBOUNCE;
+use crate::app::radio_search;
 use crate::app::truncate;
+use crate::directory::Found;
+use crate::directory::SharedDirectory;
 use crate::probe::ProbeInfo;
 use crate::probe::SharedProbe;
 use crate::subsonic::SharedLibrary;
@@ -89,6 +95,21 @@ impl Form {
         }
     }
 
+    /// A form for a station picked from the directory: filled in, on the
+    /// toggle row, and previewing — the probe for generation 1 is sent by
+    /// whoever opens it, so picking is hearing.
+    fn from_found(found: &Found) -> Self {
+        Self {
+            name: found.name.clone(),
+            url: found.stream_url.clone(),
+            field: FormField::Preview,
+            preview: true,
+            probe: ProbeStatus::Probing,
+            generation: 1,
+            ..Default::default()
+        }
+    }
+
     fn preview_track(&self, info: &ProbeInfo) -> Track {
         let name = match self.name.trim() {
             "" => "Preview".to_string(),
@@ -119,13 +140,22 @@ pub struct State {
     pub form: Option<Form>,
     /// Set while asking whether to delete this station.
     pub confirm_delete: Option<Station>,
+    /// Set while searching radio-browser.info. A form opened from a result
+    /// sits on top of it.
+    pub search: Option<radio_search::State>,
 }
 
 impl State {
     /// Whether the tab wants every key as text or an answer, so that global
     /// single-letter shortcuts must stand aside.
     pub fn captures_keys(&self) -> bool {
-        self.form.is_some() || self.confirm_delete.is_some()
+        self.takes_text() || self.confirm_delete.is_some()
+    }
+
+    /// Whether a text field has the keyboard — the form or the search — so
+    /// that pastes, and even `?`, belong to it.
+    pub fn takes_text(&self) -> bool {
+        self.form.is_some() || self.search.is_some()
     }
 }
 
@@ -135,6 +165,8 @@ pub enum Action {
     Loaded(Vec<Station>),
     Failed(String),
     OpenForm,
+    OpenSearch,
+    Search(radio_search::Action),
     /// Debounce elapsed, or the toggle was just switched on.
     RunProbe {
         generation: u64,
@@ -163,6 +195,7 @@ pub enum Delegated {
 pub struct Feature {
     pub library: SharedLibrary,
     pub probe: SharedProbe,
+    pub directory: SharedDirectory,
 }
 
 impl Reducer for Feature {
@@ -170,13 +203,43 @@ impl Reducer for Feature {
     type Action = Action;
 
     fn reduce(&self, state: &mut State, action: Action) -> Effect<Action> {
-        match action {
+        let library = self.library.clone();
+        let probe = self.probe.clone();
+
+        Scope::optional(
+            |s: &mut State| s.search.as_mut(),
+            case!(Action::Search),
+            radio_search::Feature {
+                directory: self.directory.clone(),
+            },
+        )
+        .on_delegate(
+            case!(radio_search::Action::Delegated),
+            |state: &mut State, d| match d {
+                // The search stays open beneath the form, so leaving the form
+                // goes back to the results rather than all the way out.
+                radio_search::Delegated::Pick(found) => {
+                    state.form = Some(Form::from_found(&found));
+                    Effect::send(Action::RunProbe { generation: 1 })
+                }
+                radio_search::Delegated::Close => {
+                    state.search = None;
+                    Effect::none()
+                }
+            },
+        )
+        .or_else(move |state: &mut State, action| match action {
             Action::Event(event) => reduce_event(state, event),
+
+            Action::OpenSearch => {
+                state.search = Some(radio_search::State::default());
+                Effect::none()
+            }
 
             Action::Reload => {
                 state.loading = true;
                 state.error = None;
-                let library = self.library.clone();
+                let library = library.clone();
                 Effect::run(move |send| async move {
                     match library.radios().await {
                         Ok(stations) => send.send(Action::Loaded(stations)),
@@ -217,7 +280,7 @@ impl Reducer for Feature {
                     return Effect::none();
                 }
                 form.probe = ProbeStatus::Probing;
-                let probe = self.probe.clone();
+                let probe = probe.clone();
                 Effect::run(move |send| async move {
                     let result = probe.probe(&url).await.map_err(|err| format!("{err:#}"));
                     send.send(Action::Probed { generation, result });
@@ -274,7 +337,7 @@ impl Reducer for Feature {
                 }
                 form.saving = true;
                 form.error = None;
-                let library = self.library.clone();
+                let library = library.clone();
                 Effect::run(move |send| async move {
                     match library.create_radio(&name, &url).await {
                         Ok(()) => send.send(Action::Saved),
@@ -287,6 +350,7 @@ impl Reducer for Feature {
                 // A preview keeps playing: it is the station that was just
                 // saved, and cutting it off would be a strange reward.
                 state.form = None;
+                state.search = None;
                 Effect::send(Action::Reload)
             }
 
@@ -299,7 +363,7 @@ impl Reducer for Feature {
             }
 
             Action::Delete(id) => {
-                let library = self.library.clone();
+                let library = library.clone();
                 Effect::run(move |send| async move {
                     match library.delete_radio(&id).await {
                         Ok(()) => send.send(Action::Deleted),
@@ -311,7 +375,9 @@ impl Reducer for Feature {
             Action::Deleted => Effect::send(Action::Reload),
 
             Action::Delegated(_) => Effect::none(),
-        }
+            Action::Search(_) => unreachable!("claimed by the scope"),
+        })
+        .reduce(state, action)
     }
 }
 
@@ -366,6 +432,10 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
         };
     }
 
+    if state.search.is_some() {
+        return Effect::send(Action::Search(radio_search::Action::Event(event)));
+    }
+
     let Event::Key(key) = &event else {
         return Effect::none();
     };
@@ -397,6 +467,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
             None => Effect::none(),
         },
         KeyCode::Char('a') => Effect::send(Action::OpenForm),
+        KeyCode::Char('s') | KeyCode::Char('/') => Effect::send(Action::OpenSearch),
         KeyCode::Char('d') | KeyCode::Delete => {
             state.confirm_delete = state.stations.get(state.selected).cloned();
             Effect::none()
@@ -472,9 +543,10 @@ pub fn ui(
     playing: Option<&str>,
 ) {
     let state = store.state();
-    match &state.form {
-        Some(form) => draw_form(ctx, form),
-        None => draw_list(ctx, &state, playing),
+    match (&state.form, &state.search) {
+        (Some(form), _) => draw_form(ctx, form),
+        (None, Some(search)) => radio_search::ui(ctx, search),
+        (None, None) => draw_list(ctx, &state, playing),
     }
 }
 
@@ -495,7 +567,8 @@ fn draw_list(ctx: &mut crate::ui::DrawingContext, state: &State, playing: Option
             station.name
         ))
         .style(Style::new().fg(Theme::ERROR)),
-        None => Line::from(" ↵ play · a add · d delete · r refresh").style(Theme::dim()),
+        None => Line::from(" ↵ play · s search · a add by URL · d delete · r refresh")
+            .style(Theme::dim()),
     };
     ctx.frame().render_widget(Paragraph::new(footer), rows[1]);
 
@@ -504,7 +577,12 @@ fn draw_list(ctx: &mut crate::ui::DrawingContext, state: &State, playing: Option
     } else if state.loading && state.stations.is_empty() {
         Some(Line::from("  Loading stations…").style(Theme::dim()))
     } else if state.loaded && state.stations.is_empty() {
-        Some(Line::from("  No stations yet — press a to add one").style(Theme::dim()))
+        Some(
+            Line::from(
+                "  No stations yet — press s to search radio-browser.info, or a to add a URL",
+            )
+            .style(Theme::dim()),
+        )
     } else {
         None
     };
@@ -727,6 +805,7 @@ mod test {
             Feature {
                 library: library.clone(),
                 probe: probe.clone(),
+                directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
             },
             state,
         );
@@ -1001,6 +1080,104 @@ mod test {
         h.store.settle();
         let names: Vec<_> = h.store.state().stations.iter().map(|s| &s.name).collect();
         assert_eq!(names, ["Synthwave"]);
+    }
+
+    fn found(uuid: &str, name: &str) -> Found {
+        Found {
+            uuid: uuid.into(),
+            name: name.into(),
+            stream_url: format!("https://{uuid}.radio.invalid/live"),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn s_opens_the_directory_search() {
+        let mut h = harness(FakeProbe::failing("unused"), State::default());
+        h.store.send(Action::Event(key(KeyCode::Char('s'))), |_| {});
+        h.store
+            .receive_next(|s| s.search = Some(radio_search::State::default()));
+    }
+
+    /// Picking a result is hearing it: the form opens filled in, on the
+    /// toggle, and the station is probed and played straight away.
+    #[tokio::test]
+    async fn picking_a_result_opens_the_form_previewing() {
+        let pick = found("abc", "Lofi 24/7");
+        let mut h = harness(
+            FakeProbe::ok(info(&pick.stream_url)),
+            State {
+                search: Some(radio_search::State::default()),
+                ..Default::default()
+            },
+        );
+
+        h.store.send(
+            Action::Search(radio_search::Action::Delegated(
+                radio_search::Delegated::Pick(Box::new(pick.clone())),
+            )),
+            |s| s.form = Some(Form::from_found(&pick)),
+        );
+        h.store.settle();
+
+        let form = form(&h.store);
+        assert_eq!(form.name, "Lofi 24/7", "the directory's name is kept");
+        assert_eq!(form.url, pick.stream_url);
+        assert!(form.preview && form.previewing, "it should be playing");
+        assert_eq!(form.probe, ProbeStatus::Ready(info(&pick.stream_url)));
+        assert_eq!(*h.probe.calls.lock().unwrap(), [pick.stream_url.as_str()]);
+    }
+
+    /// Changing your mind about a pick goes back to the results, not out of
+    /// the search.
+    #[tokio::test]
+    async fn leaving_a_picked_form_returns_to_the_results() {
+        let pick = found("abc", "Lofi 24/7");
+        let mut form = Form::from_found(&pick);
+        form.previewing = true;
+        let mut h = harness(
+            FakeProbe::failing("unused"),
+            State {
+                search: Some(radio_search::State {
+                    query: "lofi".into(),
+                    results: vec![pick.clone()],
+                    searched: true,
+                    ..Default::default()
+                }),
+                form: Some(form),
+                ..Default::default()
+            },
+        );
+
+        h.store
+            .send(Action::Event(key(KeyCode::Esc)), |s| s.form = None);
+        assert_eq!(h.store.state().search.as_ref().unwrap().results, [pick]);
+        assert_eq!(h.store.pending_len(), 1, "the preview should be stopped");
+    }
+
+    #[tokio::test]
+    async fn saving_a_picked_station_closes_the_search_too() {
+        let pick = found("abc", "Lofi 24/7");
+        let mut form = Form::from_found(&pick);
+        form.probe = ProbeStatus::Ready(info(&pick.stream_url));
+        let mut h = harness(
+            FakeProbe::failing("unused"),
+            State {
+                search: Some(radio_search::State::default()),
+                form: Some(form),
+                ..Default::default()
+            },
+        );
+
+        h.store
+            .send(Action::Save, |s| s.form.as_mut().unwrap().saving = true);
+        h.store.settle();
+        assert!(h.store.state().form.is_none());
+        assert!(h.store.state().search.is_none(), "back to the station list");
+        assert_eq!(
+            h.store.state().stations.last().unwrap().stream_url,
+            pick.stream_url
+        );
     }
 
     #[test]

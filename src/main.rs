@@ -3,6 +3,7 @@
 mod app;
 mod audio;
 mod config;
+mod directory;
 mod nowplaying;
 mod probe;
 mod subsonic;
@@ -203,6 +204,7 @@ where
             library: library.clone(),
             audio: audio.clone(),
             probe: Arc::new(probe::HttpProbe::new()?),
+            directory: Arc::new(directory::RadioBrowser::new()?),
         },
         State::restored(signed_in.then_some(()).and(saved)),
     );

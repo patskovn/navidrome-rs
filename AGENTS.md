@@ -32,6 +32,7 @@ Do not leave new warnings behind.
 src/
 ├── main.rs          terminal setup, event loop, dependency wiring
 ├── config.rs        server config, including the password, on disk
+├── directory.rs     radio-browser.info search: mirror discovery, failover
 ├── probe.rs         checks a radio URL is audio before the add form plays it
 ├── subsonic/        the server boundary
 │   ├── mod.rs       `Library` trait + app-owned domain types + test fake
@@ -47,6 +48,7 @@ src/
 │   ├── artists.rs   Artists tab: local filter, artist → albums → tracks
 │   ├── songs.rs     All Music tab
 │   ├── player.rs    queue and transport
+│   ├── radio_search.rs  station search, scoped inside the Radios tab
 │   ├── radios.rs    Radios tab: the server's stations, add (with preview), delete
 │   └── ui.rs        drawing for the root feature
 └── ui/              widgets ported from tgpt (see note below)
@@ -245,6 +247,16 @@ Reducers are testable because the server sits behind the `Library` trait; use
   `probe::USER_AGENT`. `cargo test tune_in -- --ignored` with
   `NAVIDROME_RS_LIVE_URL` set decodes a few seconds of a real station; it is
   ignored by default because it reaches someone else's server.
+- **Searching radio-browser.info asks twice.** Its filters AND together, so a
+  query is sent once as a name and once as a tag, in parallel, and merged by
+  station id, most listened first. Mirrors come from
+  `all.api.radio-browser.info/json/servers` on first use (not at startup),
+  with a short fallback list; requests fail over between them. HLS stations
+  are dropped from results, since they cannot be played. Picking a result
+  reports a click, as the directory asks, and opens the add form already
+  previewing — the search stays open underneath, so Esc returns to the
+  results. `cargo test real_directory -- --ignored` queries the real
+  directory.
 - **The station form owns the keyboard, `?` included.** Stream URLs carry
   query strings, so the help key is text there. A preview is stopped only if
   it is still what is playing (`radios::PREVIEW_ID`): the user may have

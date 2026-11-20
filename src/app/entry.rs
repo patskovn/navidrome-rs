@@ -216,6 +216,8 @@ pub struct Feature {
     pub audio: AudioEngine,
     /// Checks a station URL before the add form previews it.
     pub probe: crate::probe::SharedProbe,
+    /// Where the Radios tab searches for stations.
+    pub directory: crate::directory::SharedDirectory,
 }
 
 impl Feature {
@@ -310,6 +312,7 @@ impl Reducer for Feature {
                     radios::Feature {
                         library: self.library.clone() as SharedLibrary,
                         probe: self.probe.clone(),
+                        directory: self.directory.clone(),
                     },
                 )
                 .on_delegate(
@@ -427,7 +430,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
 
     // A paste is text, and only the station form takes text as a whole.
     if let Event::Paste(_) = &event {
-        return match state.library().map(|l| (l.tab, l.radios.form.is_some())) {
+        return match state.library().map(|l| (l.tab, l.radios.takes_text())) {
             Some((Tab::Radios, true)) => Effect::send(Action::Radios(radios::Action::Event(event))),
             _ => Effect::none(),
         };
@@ -518,7 +521,7 @@ fn reduce_event(state: &mut State, event: Event) -> Effect<Action> {
     // (`/proxy/jamz?mp=/1`), so there `?` is text like any other key.
     let typing_url = state
         .library()
-        .is_some_and(|l| l.tab == Tab::Radios && l.radios.form.is_some());
+        .is_some_and(|l| l.tab == Tab::Radios && l.radios.takes_text());
     if key.code == KeyCode::Char('?') && !typing_url {
         return Effect::send(Action::ToggleHelp);
     }
@@ -673,6 +676,7 @@ mod test {
             probe: Arc::new(crate::probe::fake::FakeProbe::failing(
                 "no network in tests",
             )),
+            directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
         }
     }
 
@@ -779,6 +783,33 @@ mod test {
         }
         assert_eq!(radio_form(&store).unwrap().name, "q?n p");
         assert!(!store.state().help, "? must not have opened help");
+    }
+
+    /// The directory search is a text field too: `q` searches, `?` is text.
+    #[tokio::test]
+    async fn the_station_search_takes_shortcut_keys_as_text() {
+        let mut store = TestStore::new(
+            feature(),
+            State {
+                session: Session::SignedIn(Box::new(Library {
+                    tab: Tab::Radios,
+                    radios: radios::State {
+                        loaded: true,
+                        search: Some(Default::default()),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+                ..Default::default()
+            },
+        );
+        for c in ['q', '?'] {
+            store.send(Action::Event(key(KeyCode::Char(c))), |_| {});
+            store.settle();
+        }
+        let search = store.state().library().unwrap().radios.search.clone();
+        assert_eq!(search.unwrap().query, "q?");
+        assert!(!store.state().help);
     }
 
     /// A URL is usually pasted, and arrives as one event.
@@ -1169,6 +1200,7 @@ mod test {
             probe: Arc::new(crate::probe::fake::FakeProbe::failing(
                 "no network in tests",
             )),
+            directory: Arc::new(crate::directory::fake::FakeDirectory::default()),
         };
         let mut store = TestStore::new(feature, State::default());
 
