@@ -315,7 +315,12 @@ async fn main() -> anyhow::Result<()> {
     configure_logger()?;
     enable_raw_mode()?;
 
-    let mut stderr = io::stderr();
+    // Buffered, so a frame reaches the terminal as one write. Bare stderr is
+    // unbuffered: every colour change and run of text was its own syscall,
+    // thousands a frame, and at the scene's 20 fps that was most of the
+    // app's CPU (and a good share of the terminal's). ratatui flushes once
+    // per draw, and `execute!` flushes too.
+    let mut stderr = io::BufWriter::new(io::stderr());
     // Mouse capture is deliberately not enabled: nothing here reduces mouse
     // events, and enabling it would break the terminal's own text selection.
     //
