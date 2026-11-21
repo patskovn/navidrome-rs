@@ -227,6 +227,16 @@ Reducers are testable because the server sits behind the `Library` trait; use
   to its final name only once the full content length has landed, so an
   interrupted download is never mistaken for a complete file. Stale `.part`
   files are swept on startup.
+- **Drawing runs 20 times a second while anything animates, so per-frame cost
+  is real CPU.** Three things that were measured, not guessed:
+  - The backend writes through a `BufWriter`. Bare stderr is unbuffered, and
+    every colour change became its own syscall: most of the CPU, once.
+  - The viewport is `Viewport::Fixed`, resized in `event_loop` on
+    `Event::Resize`. The default fullscreen viewport asks the terminal its size
+    before every frame, which on macOS opens `/dev/tty`.
+  - Draw code reads state by reference. `.cloned()` on a big piece of state in
+    a draw function copies every list in it, every frame: `draw_active_tab`
+    once cloned the whole library just to read the tab.
 
 ## Conventions
 

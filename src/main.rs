@@ -22,12 +22,15 @@ use crossterm::event::Event;
 use futures::FutureExt;
 use futures::StreamExt;
 use ratatui::Terminal;
+use ratatui::TerminalOptions;
+use ratatui::Viewport;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::EnterAlternateScreen;
 use ratatui::crossterm::terminal::LeaveAlternateScreen;
 use ratatui::crossterm::terminal::disable_raw_mode;
 use ratatui::crossterm::terminal::enable_raw_mode;
+use ratatui::layout::Rect;
 use ratatui::prelude::Backend;
 use simplelog::CombinedLogger;
 use simplelog::WriteLogger;
@@ -293,6 +296,9 @@ where
             maybe_event = terminal_event => {
                 match maybe_event {
                     Some(Ok(event)) if is_actionable(&event) => {
+                        if let Event::Resize(cols, rows) = event {
+                            terminal.resize(Rect::new(0, 0, cols, rows))?;
+                        }
                         store.send(Action::Event(event));
                     }
                     Some(Ok(_)) => continue,
@@ -334,7 +340,17 @@ async fn main() -> anyhow::Result<()> {
         EnableFocusChange
     )?;
     let backend = CrosstermBackend::new(stderr);
-    let mut terminal = Terminal::new(backend)?;
+    // A fixed viewport, resized when the terminal says it changed. The
+    // default fullscreen one asks the terminal its size before every frame,
+    // which on macOS opens /dev/tty: twenty opens a second while anything
+    // animates.
+    let (cols, rows) = ratatui::crossterm::terminal::size()?;
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, cols, rows)),
+        },
+    )?;
     terminal.clear()?;
 
     let result = event_loop(&mut terminal).await;

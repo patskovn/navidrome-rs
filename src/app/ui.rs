@@ -142,7 +142,14 @@ fn tab_strip(active: Tab) -> Line<'static> {
 }
 
 fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
-    let Some(library) = store.state().library().cloned() else {
+    // Just the two small fields drawing needs. This once cloned the whole
+    // library state, every album, artist, song and radio list in it, on every
+    // frame: at 20 fps that was a fifth of the app's drawing time.
+    let Some((tab, queue_cursor)) = store
+        .state()
+        .library()
+        .map(|library| (library.tab, library.queue_cursor))
+    else {
         return;
     };
     // Which track is sounding right now, so lists can mark it.
@@ -155,7 +162,7 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .title(tab_strip(library.tab))
+        .title(tab_strip(tab))
         // Bottom right, where it stays out of the way of the tabs but is still
         // on screen — this used to sit beside them in the old top bar.
         .title_bottom(
@@ -165,7 +172,7 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
     let area = ctx.area();
     ctx.frame().render_widget(block, area);
 
-    match library.tab {
+    match tab {
         Tab::Albums => albums::ui(
             &mut ctx.with_area(inner),
             store.scope(
@@ -198,12 +205,7 @@ fn draw_active_tab(ctx: &mut DrawingContext, store: &Store<State, Action>) {
             ),
             playing.as_deref(),
         ),
-        Tab::Queue => draw_queue(
-            ctx.frame(),
-            inner,
-            library.queue_cursor,
-            &store.state().player,
-        ),
+        Tab::Queue => draw_queue(ctx.frame(), inner, queue_cursor, &store.state().player),
     }
 }
 
