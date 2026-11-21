@@ -4,6 +4,7 @@ pub mod cache;
 pub mod engine;
 mod relay;
 pub mod tap;
+mod watch;
 
 pub use cache::TrackCache;
 pub use engine::AudioEngine;

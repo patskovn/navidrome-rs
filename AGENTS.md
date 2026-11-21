@@ -40,6 +40,7 @@ src/
 ├── audio/
 │   ├── engine.rs    playback thread, command in / event out, output choice
 │   ├── relay.rs     the player's output, handed between devices
+│   ├── watch.rs     CoreAudio word of output changes (macOS; polled elsewhere)
 │   ├── cache.rs     2 GiB LRU disk cache; also a stream-download backend
 │   └── tap.rs       pass-through Source copying samples for the visualiser
 ├── app/             tca features
@@ -173,12 +174,17 @@ Reducers are testable because the server sits behind the `Library` trait; use
   drops the old one. Track, position, pause, volume and downloads are
   untouched. Never rebuild the player to change device: that re-tunes
   stations, re-downloads songs and forgets a paused track.
-- **Outputs are polled, not waited for.** On macOS cpal watches only the
+- **Output changes come from CoreAudio, not cpal.** cpal watches only the
   stream's own device and, for the default device, reports its loss to a
   no-op callback after pausing the stream, so AirPods going in or a monitor
-  unplugging just goes silent. `Output::check` runs every second and moves
-  playback to `pick_output`: the chosen device while plugged in, else the
-  system default. `moves_between_outputs` (ignored) exercises real devices.
+  unplugging just goes silent. `audio/watch.rs` listens on the system object
+  for the default output and the device list; on word, `Output::check` moves
+  playback to `pick_output` (the chosen device while plugged in, else the
+  system default). Nothing is polled on macOS, except a once-a-second retry
+  after an output fails to open; other platforms poll every second. Ignored
+  probes exercise the real thing: `moves_between_outputs`, and
+  `the_system_says_when_devices_change` (a private aggregate device, which
+  only the test process sees).
   Resuming also means re-opening the track and seeking, since the new player
   starts empty.
 - **The Queue tab is not a scoped child feature, deliberately.** Its only state

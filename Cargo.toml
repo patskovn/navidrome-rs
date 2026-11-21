@@ -34,6 +34,9 @@ block2 = "0.6"
 libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSImage"] }
+# Word when the default output moves or devices come and go (`audio/watch.rs`).
+# The same bindings cpal already builds, so nothing new is compiled.
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
 objc2-core-foundation = "0.3"
 objc2-foundation = "0.3"
 objc2-media-player = "0.3"

@@ -26,18 +26,19 @@ use tokio::sync::mpsc;
 use super::cache::{DownloadProgress, TrackCache};
 use super::relay::Relay;
 use super::tap::{SampleTap, Tapped};
+use super::watch::OutputWatch;
 use crate::subsonic::Track;
 
 /// How often the engine reports playback position while a track runs.
 const POSITION_INTERVAL: Duration = Duration::from_millis(200);
 
-/// How often to look for a better output: the system default moving (AirPods
-/// put in, a monitor unplugged) or a chosen device coming back.
+/// How often to look for a better output where the system will not say when
+/// they change, and to try again an output that would not open.
 ///
-/// Looked for rather than waited for, because on macOS nothing tells us. cpal
-/// watches only the device a stream is open on, and for the default device it
-/// swallows even that: when the device dies it pauses the stream and reports
-/// to a callback that does nothing, so playback just goes silent.
+/// cpal is no help here: it watches only the device a stream is open on, and
+/// for the default device it swallows even that. When the device dies it
+/// pauses the stream and reports to a callback that does nothing, so playback
+/// just goes silent. On macOS, [`OutputWatch`] has CoreAudio say instead.
 const OUTPUT_CHECK: Duration = Duration::from_secs(1);
 
 /// Smallest change in download progress worth an event.
@@ -289,6 +290,13 @@ struct Output {
     opening: u64,
     /// The current device reported an error and must be reopened.
     broken: bool,
+    /// The system says its outputs changed since the last check.
+    changed: bool,
+    /// The system says when outputs change, so there is no need to look.
+    watched: bool,
+    /// The last check could not open the output it wanted. Nothing may say
+    /// when that output is ready, so it is retried every [`OUTPUT_CHECK`].
+    retrying: bool,
     checked: Instant,
     /// What the app has been told, so each is said once rather than every
     /// second it stays true.
@@ -305,23 +313,37 @@ impl Output {
             device: None,
             opening: 0,
             broken: false,
+            changed: false,
+            watched: false,
+            retrying: false,
             checked: Instant::now(),
             told_nowhere: false,
             told_fell_back: false,
         }
     }
 
-    /// Time to look again: the device complained, or a while has passed.
+    /// Time to look again: the device complained, the system says something
+    /// changed, or, with no one to say, a while has passed.
     fn due(&self) -> bool {
-        self.broken || self.checked.elapsed() >= OUTPUT_CHECK
+        if self.broken || self.changed {
+            return true;
+        }
+        let looking = !self.watched || self.retrying;
+        looking && self.checked.elapsed() >= OUTPUT_CHECK
     }
 
     /// Moves playback to where it belongs, if it is not there already.
-    ///
-    /// The new device is opened before the old one is let go, so a device
-    /// that will not open costs nothing: the old one plays on.
     fn check(&mut self) -> Moved {
         self.checked = Instant::now();
+        self.changed = false;
+        let moved = self.move_to_target();
+        self.retrying = matches!(moved, Moved::Failed { .. });
+        moved
+    }
+
+    /// The new device is opened before the old one is let go, so a device
+    /// that will not open costs nothing: the old one plays on.
+    fn move_to_target(&mut self) -> Moved {
         let working = self.device.is_some() && !self.broken;
         let Some(target) = wanted_output(self.chosen.as_deref()) else {
             return if working {
@@ -487,6 +509,12 @@ fn run(
     let (player, queue) = Player::new();
     let mut output = Output::new(Relay::new(queue), lost_tx);
 
+    // Word from the system when outputs change, where it gives any. Held for
+    // the life of the thread: dropping it stops the listening.
+    let (changed_tx, mut changed_rx) = mpsc::unbounded_channel::<()>();
+    let _watch = OutputWatch::start(changed_tx);
+    output.watched = _watch.is_some();
+
     // The download behind the current track, while one is in flight. `None`
     // means nothing to watch: a cache hit, or nothing playing.
     let mut buffering: Option<DownloadProgress> = None;
@@ -512,13 +540,20 @@ fn run(
     }
 
     loop {
-        // Wait for a command or a device error, but wake regularly to report
-        // position, notice the track ending, and look at the outputs.
+        // Wait for a command, a device error or word of new outputs, but wake
+        // regularly to report position and notice the track ending.
         let wake = runtime.block_on(async {
             tokio::select! {
                 command = commands.recv() => Some(command),
                 Some(opening) = lost_rx.recv() => {
                     output.complained(opening);
+                    None
+                }
+                Some(()) = changed_rx.recv() => {
+                    // One plug-in fires several; one look covers them all.
+                    while changed_rx.try_recv().is_ok() {}
+                    log::debug!("audio outputs changed");
+                    output.changed = true;
                     None
                 }
                 _ = tokio::time::sleep(POSITION_INTERVAL) => None,
@@ -726,6 +761,45 @@ mod test {
             Some("speakers".into())
         );
         assert_eq!(pick_output(Some("monitor"), &[], None), None);
+    }
+
+    fn idle_output() -> Output {
+        let (_player, queue) = Player::new();
+        let (lost, _) = mpsc::unbounded_channel();
+        Output::new(Relay::new(queue), lost)
+    }
+
+    /// With the system saying when outputs change, nothing is looked at
+    /// until it does, however long that takes.
+    #[test]
+    fn a_watched_output_waits_for_word() {
+        let mut output = idle_output();
+        output.watched = true;
+        output.checked -= OUTPUT_CHECK * 10;
+        assert!(!output.due(), "looked with nothing said");
+        output.changed = true;
+        assert!(output.due(), "word came and it did not look");
+    }
+
+    /// Without word from the system, it looks every second.
+    #[test]
+    fn an_unwatched_output_looks_every_second() {
+        let mut output = idle_output();
+        assert!(!output.due(), "looked again at once");
+        output.checked -= OUTPUT_CHECK;
+        assert!(output.due());
+    }
+
+    /// An output that would not open is tried again every second even when
+    /// watched: AirPods can become the default before they will play.
+    #[test]
+    fn a_failed_open_is_retried_even_when_watched() {
+        let mut output = idle_output();
+        output.watched = true;
+        output.retrying = true;
+        assert!(!output.due());
+        output.checked -= OUTPUT_CHECK;
+        assert!(output.due());
     }
 
     #[tokio::test]
