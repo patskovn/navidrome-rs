@@ -13,7 +13,7 @@
 use std::io::{Read, Seek};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
@@ -24,11 +24,21 @@ use stream_download::{Settings, StreamDownload};
 use tokio::sync::mpsc;
 
 use super::cache::{DownloadProgress, TrackCache};
+use super::relay::Relay;
 use super::tap::{SampleTap, Tapped};
 use crate::subsonic::Track;
 
 /// How often the engine reports playback position while a track runs.
 const POSITION_INTERVAL: Duration = Duration::from_millis(200);
+
+/// How often to look for a better output: the system default moving (AirPods
+/// put in, a monitor unplugged) or a chosen device coming back.
+///
+/// Looked for rather than waited for, because on macOS nothing tells us. cpal
+/// watches only the device a stream is open on, and for the default device it
+/// swallows even that: when the device dies it pauses the stream and reports
+/// to a callback that does nothing, so playback just goes silent.
+const OUTPUT_CHECK: Duration = Duration::from_secs(1);
 
 /// Smallest change in download progress worth an event.
 ///
@@ -67,7 +77,8 @@ pub enum Command {
     Stop,
     SetVolume(f32),
     Seek(Duration),
-    /// Move playback to a named output, or back to the system default.
+    /// Play on a named output while it is plugged in, or always follow the
+    /// system default.
     SetDevice(Option<String>),
     /// Re-enumerate outputs and report them.
     RefreshDevices,
@@ -102,7 +113,8 @@ pub enum Event {
         names: Vec<(String, String)>,
         active: Option<String>,
     },
-    /// The output vanished and playback was moved elsewhere.
+    /// The chosen output vanished and playback moved to the default
+    /// (`recovered`), or there is no output to play on at all.
     DeviceLost {
         recovered: bool,
     },
@@ -163,59 +175,224 @@ pub fn output_devices() -> Vec<(String, String)> {
     host.output_devices()
         .map(|devices| {
             devices
-                .map(|d| {
-                    let id = d.id().map(|id| format!("{id:?}")).unwrap_or_default();
+                .filter_map(|d| {
                     let label = d
                         .description()
                         .map(|desc| desc.name().to_string())
                         .unwrap_or_else(|_| "Unknown output".to_string());
-                    (id, label)
+                    Some((device_id(&d)?, label))
                 })
-                .filter(|(id, _)| !id.is_empty())
                 .collect()
         })
         .unwrap_or_default()
 }
 
-/// Opens a sink on `name`, or the default when absent or not found.
+/// A device's id as the app knows it: rodio's stable id, printed.
+fn device_id(device: &rodio::cpal::Device) -> Option<String> {
+    device
+        .id()
+        .ok()
+        .map(|id| format!("{id:?}"))
+        .filter(|id| !id.is_empty())
+}
+
+/// Where playback belongs: the chosen output while it is plugged in,
+/// otherwise the system default as it is right now.
 ///
-/// The error callback is the whole point: cpal reports `DeviceNotAvailable`
-/// here when a device is unplugged, and without it playback simply stops with
-/// nothing noticing.
-fn open_sink(
-    name: Option<&str>,
-    lost: tokio::sync::mpsc::UnboundedSender<()>,
-) -> Result<(MixerDeviceSink, Option<String>), String> {
+/// Following the default is what makes AirPods and monitors work: macOS
+/// moves it to them as they come and back as they go.
+fn pick_output(
+    chosen: Option<&str>,
+    available: &[String],
+    default: Option<&str>,
+) -> Option<String> {
+    chosen
+        .filter(|wanted| available.iter().any(|id| id == wanted))
+        .or(default)
+        .map(str::to_string)
+}
+
+/// [`pick_output`] against the devices as they are now.
+fn wanted_output(chosen: Option<&str>) -> Option<String> {
+    let host = rodio::cpal::default_host();
+    // Listing every device is only needed to see whether the chosen is here.
+    let available: Vec<String> = match chosen {
+        Some(_) => host
+            .output_devices()
+            .map(|devices| devices.filter_map(|d| device_id(&d)).collect())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let default = host.default_output_device().and_then(|d| device_id(&d));
+    pick_output(chosen, &available, default.as_deref())
+}
+
+/// Opens the output `id` and plugs the relay into it.
+///
+/// The error callback reports `opening`, so a late complaint from a device
+/// already left behind is not taken for the current one failing.
+fn open_output(
+    id: &str,
+    relay: &Relay,
+    opening: u64,
+    lost: mpsc::UnboundedSender<u64>,
+) -> Result<MixerDeviceSink, String> {
+    let device = rodio::cpal::default_host()
+        .output_devices()
+        .map_err(|err| format!("{err}"))?
+        .find(|d| device_id(d).as_deref() == Some(id))
+        .ok_or_else(|| "the device is gone".to_string())?;
+
     let on_error = move |err: rodio::cpal::StreamError| {
         log::warn!("audio stream error: {err}");
-        let _ = lost.send(());
+        let _ = lost.send(opening);
     };
-
-    let chosen = name.and_then(|wanted| {
-        rodio::cpal::default_host()
-            .output_devices()
-            .ok()?
-            .find(|d| d.id().is_ok_and(|id| format!("{id:?}") == wanted))
-    });
-
-    let builder = match chosen {
-        Some(device) => DeviceSinkBuilder::from_device(device),
-        None => DeviceSinkBuilder::from_default_device(),
-    }
-    .map_err(|err| format!("{err}"))?;
-
-    let active = name.map(str::to_string);
-    let mut sink = builder
+    let mut sink = DeviceSinkBuilder::from_device(device)
+        .map_err(|err| format!("{err}"))?
         .with_error_callback(on_error)
         .open_stream()
         .map_err(|err| format!("{err}"))?;
 
-    // Every rebuild drops the previous sink on purpose, and rodio warns about
-    // that on stderr — which lands on top of the alternate screen and corrupts
+    // Every move drops the previous sink on purpose, and rodio warns about
+    // that on stderr, which lands on top of the alternate screen and corrupts
     // the TUI. We manage the lifecycle deliberately, so the warning is noise.
     sink.log_on_drop(false);
 
-    Ok((sink, active))
+    sink.mixer().add(relay.outlet());
+    Ok(sink)
+}
+
+/// What an output check did.
+#[derive(Debug)]
+enum Moved {
+    /// Already where it belongs, or could not move and still plays.
+    Stayed,
+    /// Now on a new device. `fell_back`: not the one the user chose.
+    To { fell_back: bool },
+    /// The device it should be on would not open.
+    Failed {
+        err: String,
+        /// Nothing is playing it either: no device is open at all.
+        nowhere: bool,
+    },
+}
+
+/// The device playback is on, and when to move it.
+struct Output {
+    relay: Relay,
+    lost: mpsc::UnboundedSender<u64>,
+    /// The output the user picked; `None` follows the system default.
+    chosen: Option<String>,
+    /// The open device and its id; `None` while there is nowhere to play.
+    device: Option<(MixerDeviceSink, String)>,
+    /// Counts devices opened, to tell the current one's errors from stale ones.
+    opening: u64,
+    /// The current device reported an error and must be reopened.
+    broken: bool,
+    checked: Instant,
+    /// What the app has been told, so each is said once rather than every
+    /// second it stays true.
+    told_nowhere: bool,
+    told_fell_back: bool,
+}
+
+impl Output {
+    fn new(relay: Relay, lost: mpsc::UnboundedSender<u64>) -> Self {
+        Self {
+            relay,
+            lost,
+            chosen: None,
+            device: None,
+            opening: 0,
+            broken: false,
+            checked: Instant::now(),
+            told_nowhere: false,
+            told_fell_back: false,
+        }
+    }
+
+    /// Time to look again: the device complained, or a while has passed.
+    fn due(&self) -> bool {
+        self.broken || self.checked.elapsed() >= OUTPUT_CHECK
+    }
+
+    /// Moves playback to where it belongs, if it is not there already.
+    ///
+    /// The new device is opened before the old one is let go, so a device
+    /// that will not open costs nothing: the old one plays on.
+    fn check(&mut self) -> Moved {
+        self.checked = Instant::now();
+        let working = self.device.is_some() && !self.broken;
+        let Some(target) = wanted_output(self.chosen.as_deref()) else {
+            return if working {
+                Moved::Stayed
+            } else {
+                Moved::Failed {
+                    err: "no output device".to_string(),
+                    nowhere: true,
+                }
+            };
+        };
+        if working && self.device.as_ref().is_some_and(|(_, id)| *id == target) {
+            return Moved::Stayed;
+        }
+
+        self.opening += 1;
+        match open_output(&target, &self.relay, self.opening, self.lost.clone()) {
+            Ok(sink) => {
+                log::info!("audio output is now {target}");
+                // The old device goes here; its outlet has already ended.
+                self.device = Some((sink, target.clone()));
+                self.broken = false;
+                Moved::To {
+                    fell_back: self.chosen.as_ref().is_some_and(|c| *c != target),
+                }
+            }
+            Err(err) => {
+                log::warn!("cannot open audio output {target}: {err}");
+                Moved::Failed {
+                    err,
+                    nowhere: !working,
+                }
+            }
+        }
+    }
+
+    /// A device's error callback fired. Only the current device's counts.
+    fn complained(&mut self, opening: u64) {
+        if opening == self.opening {
+            log::warn!("audio output failed; reopening");
+            self.broken = true;
+        }
+    }
+
+    /// What the app needs to hear after a check. `idle` is whether the
+    /// player is silent anyway: paused, or with nothing to play.
+    fn events(&mut self, moved: &Moved, idle: bool) -> Vec<Event> {
+        match moved {
+            Moved::Stayed => Vec::new(),
+            Moved::To { fell_back } => {
+                let mut said = vec![Event::Devices {
+                    names: output_devices(),
+                    active: self.chosen.clone(),
+                }];
+                if *fell_back && !self.told_fell_back {
+                    said.push(Event::DeviceLost { recovered: true });
+                }
+                self.told_fell_back = *fell_back;
+                // Back from nowhere: the app marked playback stopped.
+                if std::mem::take(&mut self.told_nowhere) {
+                    said.push(Event::Paused(idle));
+                }
+                said
+            }
+            Moved::Failed { nowhere: true, .. } if !self.told_nowhere => {
+                self.told_nowhere = true;
+                vec![Event::DeviceLost { recovered: false }]
+            }
+            Moved::Failed { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Either a fully cached file or a progressive HTTP stream, both of which are
@@ -301,23 +478,14 @@ fn run(
     cache: Arc<TrackCache>,
     runtime: tokio::runtime::Handle,
 ) {
-    // Device loss arrives on its own channel, from cpal's callback thread.
-    let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<()>();
+    // Device errors arrive on their own channel, from cpal's callback thread,
+    // tagged with which opening of a device they came from.
+    let (lost_tx, mut lost_rx) = mpsc::unbounded_channel::<u64>();
 
-    let mut device_name: Option<String> = None;
-    let (mut device, _) = match open_sink(None, lost_tx.clone()) {
-        Ok(pair) => pair,
-        Err(err) => {
-            let _ = events.send(Event::Failed(format!("no audio output: {err}")));
-            return;
-        }
-    };
-    let mut player = Player::connect_new(device.mixer());
-
-    // Enough to put playback back after a rebuild: a fresh sink means a fresh
-    // `Player`, so the track has to be re-opened and seeked.
-    let mut current: Option<(Track, String)> = None;
-    let mut volume = 1.0f32;
+    // The player outlives every device: it plays into a relay, and the relay
+    // moves between outputs as they come and go.
+    let (player, queue) = Player::new();
+    let mut output = Output::new(Relay::new(queue), lost_tx);
 
     // The download behind the current track, while one is in flight. `None`
     // means nothing to watch: a cache hit, or nothing playing.
@@ -331,83 +499,41 @@ fn run(
     // an idle player does not emit `Finished` on every tick.
     let mut playing = false;
 
-    let _ = events.send(Event::Devices {
-        names: output_devices(),
-        active: device_name.clone(),
-    });
+    let moved = output.check();
+    let opened = matches!(moved, Moved::To { .. });
+    for event in output.events(&moved, true) {
+        let _ = events.send(event);
+    }
+    if !opened {
+        let _ = events.send(Event::Devices {
+            names: output_devices(),
+            active: None,
+        });
+    }
 
     loop {
-        // `recv_timeout` equivalent: wait for a command, but wake regularly to
-        // report position and notice the track ending.
-        // Wake for a command, for device loss, or on the position tick.
-        let mut device_lost = false;
-        let command = runtime.block_on(async {
+        // Wait for a command or a device error, but wake regularly to report
+        // position, notice the track ending, and look at the outputs.
+        let wake = runtime.block_on(async {
             tokio::select! {
-                command = commands.recv() => Ok(command),
-                _ = lost_rx.recv() => {
-                    device_lost = true;
-                    Ok(None)
+                command = commands.recv() => Some(command),
+                Some(opening) = lost_rx.recv() => {
+                    output.complained(opening);
+                    None
                 }
-                _ = tokio::time::sleep(POSITION_INTERVAL) => Err(()),
+                _ = tokio::time::sleep(POSITION_INTERVAL) => None,
             }
         });
-
-        if device_lost {
-            // Drain any pile-up: one unplug can fire the callback repeatedly.
-            while lost_rx.try_recv().is_ok() {}
-            log::warn!("output device lost; rebuilding");
-
-            let resume_at = player.get_pos();
-            let was_playing = playing && !player.is_paused();
-
-            match open_sink(device_name.as_deref(), lost_tx.clone())
-                .or_else(|_| open_sink(None, lost_tx.clone()))
-            {
-                Ok((new_device, active)) => {
-                    device = new_device;
-                    device_name = active;
-                    player = Player::connect_new(device.mixer());
-                    // Volume lives on the `Player`, so a rebuild resets it.
-                    player.set_volume(volume);
-
-                    if was_playing
-                        && let Some((track, url)) = current.clone()
-                        && let Ok((source, progress)) =
-                            runtime.block_on(open_source(&cache, &track, &url))
-                        && let Ok(decoded) = decode(source, track.live_url.is_some())
-                    {
-                        player.append(Tapped::new(decoded, tap.clone()));
-                        player.play();
-                        // A rebuild re-opens the track, so this is a new
-                        // download to watch — or a cache hit, if it finished.
-                        buffering = progress;
-                        if let Err(err) = player.try_seek(resume_at) {
-                            log::warn!("could not resume at {resume_at:?}: {err}");
-                        }
-                    } else {
-                        playing = false;
-                    }
-                    let _ = events.send(Event::DeviceLost { recovered: true });
-                    let _ = events.send(Event::Devices {
-                        names: output_devices(),
-                        active: device_name.clone(),
-                    });
-                }
-                Err(err) => {
-                    playing = false;
-                    let _ = events.send(Event::Failed(format!("lost audio output: {err}")));
-                    let _ = events.send(Event::DeviceLost { recovered: false });
-                }
-            }
-            continue;
-        }
+        let command = match wake {
+            Some(command) => Ok(command),
+            None => Err(()),
+        };
 
         match command {
             Ok(Some(Command::Shutdown)) | Ok(None) => break,
             Ok(Some(Command::Play { track, url })) => {
                 player.clear();
                 tap.mark_idle();
-                current = Some((track.clone(), url.clone()));
 
                 match runtime.block_on(open_source(&cache, &track, &url)) {
                     Ok((source, progress)) => match decode(source, track.live_url.is_some()) {
@@ -461,56 +587,41 @@ fn run(
                 player.clear();
                 tap.mark_idle();
                 playing = false;
-                current = None;
                 buffering = None;
                 reported_buffer = f64::NEG_INFINITY;
                 let _ = events.send(Event::Paused(true));
             }
             Ok(Some(Command::SetVolume(level))) => {
-                volume = level.clamp(0.0, 2.0);
-                player.set_volume(volume);
+                player.set_volume(level.clamp(0.0, 2.0));
             }
 
             Ok(Some(Command::RefreshDevices)) => {
                 let _ = events.send(Event::Devices {
                     names: output_devices(),
-                    active: device_name.clone(),
+                    active: output.chosen.clone(),
                 });
             }
 
             Ok(Some(Command::SetDevice(name))) => {
-                let resume_at = player.get_pos();
-                let was_playing = playing && !player.is_paused();
-
-                match open_sink(name.as_deref(), lost_tx.clone()) {
-                    Ok((new_device, active)) => {
-                        device = new_device;
-                        device_name = active;
-                        player = Player::connect_new(device.mixer());
-                        player.set_volume(volume);
-
-                        if was_playing
-                            && let Some((track, url)) = current.clone()
-                            && let Ok((source, progress)) =
-                                runtime.block_on(open_source(&cache, &track, &url))
-                            && let Ok(decoded) = decode(source, track.live_url.is_some())
-                        {
-                            player.append(Tapped::new(decoded, tap.clone()));
-                            player.play();
-                            buffering = progress;
-                            let _ = player.try_seek(resume_at);
-                        } else {
-                            playing = false;
-                        }
-                        let _ = events.send(Event::Devices {
-                            names: output_devices(),
-                            active: device_name.clone(),
-                        });
-                    }
-                    Err(err) => {
-                        let _ =
-                            events.send(Event::Failed(format!("cannot use that output: {err}")));
-                    }
+                output.chosen = name;
+                let moved = output.check();
+                if let Moved::Failed {
+                    err,
+                    nowhere: false,
+                } = &moved
+                {
+                    let _ = events.send(Event::Failed(format!("cannot use that output: {err}")));
+                }
+                let idle = !playing || player.is_paused();
+                for event in output.events(&moved, idle) {
+                    let _ = events.send(event);
+                }
+                // The picker shows the choice even when nothing had to move.
+                if !matches!(moved, Moved::To { .. }) {
+                    let _ = events.send(Event::Devices {
+                        names: output_devices(),
+                        active: output.chosen.clone(),
+                    });
                 }
             }
             Ok(Some(Command::Seek(pos))) => {
@@ -520,6 +631,14 @@ fn run(
             }
             // Timed out: no command, just do the periodic work.
             Err(_) => {}
+        }
+
+        if output.due() {
+            let moved = output.check();
+            let idle = !playing || player.is_paused();
+            for event in output.events(&moved, idle) {
+                let _ = events.send(event);
+            }
         }
 
         if playing {
@@ -573,6 +692,42 @@ mod test {
         assert_ne!(Event::Paused(true), Event::Paused(false));
     }
 
+    fn ids(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// With no choice made, playback goes wherever the system default is:
+    /// that is how AirPods and a monitor's speakers get it.
+    #[test]
+    fn with_no_choice_playback_follows_the_default() {
+        let here = ids(&["speakers", "airpods"]);
+        assert_eq!(
+            pick_output(None, &here, Some("airpods")),
+            Some("airpods".into())
+        );
+        assert_eq!(
+            pick_output(None, &here, Some("speakers")),
+            Some("speakers".into())
+        );
+    }
+
+    /// A chosen output wins while it is plugged in, and playback falls back
+    /// to the default while it is not, to return when it does.
+    #[test]
+    fn a_chosen_output_is_used_while_it_is_there() {
+        let all = ids(&["speakers", "monitor"]);
+        assert_eq!(
+            pick_output(Some("monitor"), &all, Some("speakers")),
+            Some("monitor".into())
+        );
+        let unplugged = ids(&["speakers"]);
+        assert_eq!(
+            pick_output(Some("monitor"), &unplugged, Some("speakers")),
+            Some("speakers".into())
+        );
+        assert_eq!(pick_output(Some("monitor"), &[], None), None);
+    }
+
     #[tokio::test]
     async fn commands_to_a_dead_engine_do_not_panic() {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -594,6 +749,63 @@ mod device_probe {
     fn list_outputs() {
         for (id, label) in super::output_devices() {
             println!("PROBE {label}  [{id}]");
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_probe {
+    use std::time::Duration;
+
+    use rodio::Source;
+
+    use super::*;
+
+    /// Plays silence through the relay and moves it across every output on
+    /// this machine, checking playback carries on at each stop. Silence, so
+    /// nothing is heard; and it never changes the system default.
+    ///
+    /// `cargo test moves_between_outputs -- --ignored --nocapture`
+    #[test]
+    #[ignore = "depends on the host's audio hardware"]
+    fn moves_between_outputs() {
+        let all = output_devices();
+        let default = wanted_output(None).expect("a default output");
+        assert!(
+            all.iter().any(|(id, _)| *id == default),
+            "the default {default} is not among the outputs {all:?}"
+        );
+
+        let (player, queue) = Player::new();
+        let (lost, _complaints) = mpsc::unbounded_channel();
+        let mut output = Output::new(Relay::new(queue), lost);
+        player.append(
+            rodio::source::Zero::new(
+                std::num::NonZero::new(2).unwrap(),
+                std::num::NonZero::new(44_100).unwrap(),
+            )
+            .take_duration(Duration::from_secs(60)),
+        );
+        player.pause();
+
+        let mut stops: Vec<(Option<String>, String)> = all
+            .iter()
+            .map(|(id, label)| (Some(id.clone()), label.clone()))
+            .collect();
+        stops.push((None, "the system default".to_string()));
+        for (chosen, label) in stops {
+            output.chosen = chosen;
+            let moved = output.check();
+            let before = player.get_pos();
+            player.play();
+            std::thread::sleep(Duration::from_millis(600));
+            player.pause();
+            let played = player.get_pos() - before;
+            println!("OUTPUT {label}: {moved:?}, played {played:?}");
+            assert!(
+                played >= Duration::from_millis(300),
+                "playback stalled on {label}"
+            );
         }
     }
 }

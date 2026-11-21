@@ -2,6 +2,7 @@
 
 pub mod cache;
 pub mod engine;
+mod relay;
 pub mod tap;
 
 pub use cache::TrackCache;

@@ -24,9 +24,10 @@ is ported from it.
 - **Queue tab**: the play order, opening on whatever is sounding. `↵` plays a
   track out of turn, `d` drops one. It has no search field, so single letters
   are commands there.
-- **Playback** with play/pause, next/previous, and volume. Unplugging an output
-  moves playback to another device and resumes where it left off; `Ctrl-O`
-  picks one. The sounding track
+- **Playback** with play/pause, next/previous, and volume. It follows the
+  system output: put AirPods in or unplug a monitor and the music moves with
+  it, without a gap. `Ctrl-O` pins an output instead, used whenever it is
+  plugged in. The sounding track
   is marked in whichever list it appears in.
 - **Progressive streaming** — a track starts playing before it has finished
   downloading, and the scrubber shows how far ahead the download has got:

@@ -38,7 +38,8 @@ src/
 │   ├── mod.rs       `Library` trait + app-owned domain types + test fake
 │   └── client.rs    `opensubsonic`-backed implementation
 ├── audio/
-│   ├── engine.rs    playback thread, command in / event out
+│   ├── engine.rs    playback thread, command in / event out, output choice
+│   ├── relay.rs     the player's output, handed between devices
 │   ├── cache.rs     2 GiB LRU disk cache; also a stream-download backend
 │   └── tap.rs       pass-through Source copying samples for the visualiser
 ├── app/             tca features
@@ -165,9 +166,19 @@ Reducers are testable because the server sits behind the `Library` trait; use
   deprecated; `id()` is stable across reboots and reconnections and `
   description()` is for display only. Matching on the human-readable name
   breaks as soon as two devices share one.
-- **A rebuilt sink resets the player.** `MixerDeviceSink` and `Player` are
-  rebuilt together — a player is bound to one mixer — and volume lives on the
-  `Player`, so it has to be reapplied or the track resumes at full volume.
+- **One player for the life of the audio thread; devices come and go.** The
+  `Player` plays into a `Relay` (`audio/relay.rs`), and each open device
+  gets an `Outlet` onto it. Moving outputs opens the new device, hands it an
+  outlet (older outlets end at a frame boundary, so channels never swap), and
+  drops the old one. Track, position, pause, volume and downloads are
+  untouched. Never rebuild the player to change device: that re-tunes
+  stations, re-downloads songs and forgets a paused track.
+- **Outputs are polled, not waited for.** On macOS cpal watches only the
+  stream's own device and, for the default device, reports its loss to a
+  no-op callback after pausing the stream, so AirPods going in or a monitor
+  unplugging just goes silent. `Output::check` runs every second and moves
+  playback to `pick_output`: the chosen device while plugged in, else the
+  system default. `moves_between_outputs` (ignored) exercises real devices.
   Resuming also means re-opening the track and seeking, since the new player
   starts empty.
 - **The Queue tab is not a scoped child feature, deliberately.** Its only state
