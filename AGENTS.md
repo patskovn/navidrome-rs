@@ -110,6 +110,13 @@ was processed", not "state definitely changed". Two rules follow:
 - **The visualiser tick is the frame rate.** `entry.rs` starts a 50ms tick as a
   `cancellable` effect when playback begins and cancels it when playback stops.
   Never leave it running while idle.
+- **There is only ever one tick.** `tick_effect` is asked for the tick whenever
+  the scene is toggled or playback is reported, often while one is running. It
+  cancels before it starts, as `Effect::merge([cancel, tick])`, so that
+  restarts the tick rather than adding a ticker beside it: each extra one is
+  another twenty redraws a second for the rest of the song. The order in the
+  merge is the point, and needs tca-rs 0.3 (0.2.0 ran merged effects
+  backwards). `toggling_the_scene_during_a_song_keeps_one_tick` counts them.
 
 ### 5. Writing tests with `TestStore`
 

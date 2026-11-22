@@ -231,17 +231,25 @@ pub struct Feature {
 
 impl Feature {
     fn tick_effect(active: bool) -> Effect<Action> {
+        // Whatever tick is running stops either way. This is asked for again
+        // while it runs — the scene opened during a song — and a second
+        // ticker beside the first would double the frame rate, a third
+        // triple it, for as long as the song lasted.
+        let stop = Effect::cancel(TickId);
         if !active {
-            return Effect::cancel(TickId);
+            return stop;
         }
-        Effect::run(|send| async move {
+        let tick = Effect::run(|send| async move {
             let mut interval = tokio::time::interval(TICK);
             loop {
                 interval.tick().await;
                 send.send(Action::Tick);
             }
         })
-        .cancellable(TickId)
+        .cancellable(TickId);
+        // In this order. Merged effects run as written, so the cancel reaches
+        // the old tick and not the new. (tca-rs 0.2.0 ran them backwards.)
+        Effect::merge([stop, tick])
     }
 }
 
@@ -1449,6 +1457,105 @@ mod test {
         fn stream_url(&self, _: &str) -> anyhow::Result<String> {
             anyhow::bail!("not signed in")
         }
+    }
+
+    /// How many ticks the real store reduces over ten tick periods, and the
+    /// most a single ticker could have made in the time that actually took.
+    ///
+    /// Takes the store, because it has to go before the test ends: the audio
+    /// thread sleeps on the test's runtime, and panics on its way out if the
+    /// runtime leaves first. With the store gone it sees its engine dropped
+    /// and leaves by itself.
+    async fn ticks_over_ten_periods(store: tca::Store<State, Action>) -> (u64, u64) {
+        // Whatever was just sent is reduced first, so only ticks are counted.
+        tokio::time::sleep(TICK * 2).await;
+
+        // The generation counts every action the store reduces, and from
+        // here on the only actions are ticks.
+        let reduced = store.observe();
+        let before = *reduced.borrow();
+        let started = std::time::Instant::now();
+        tokio::time::sleep(TICK * 10).await;
+        let ticks = *reduced.borrow() - before;
+        let periods = started.elapsed().as_millis() / TICK.as_millis();
+
+        drop(store);
+        tokio::time::sleep(TICK).await;
+
+        (ticks, periods as u64 + 2)
+    }
+
+    fn signed_in() -> State {
+        State {
+            session: Session::SignedIn(Box::default()),
+            ..Default::default()
+        }
+    }
+
+    fn playback_active(active: bool) -> Action {
+        Action::Player(player::Action::Delegated(
+            player::Delegated::PlaybackActive(active),
+        ))
+    }
+
+    /// The tick is the frame rate, so there must only ever be one. Asked for
+    /// again while it runs, it must not gain a second ticker beside the
+    /// first: every extra one is another twenty redraws a second.
+    #[tokio::test]
+    async fn asking_for_the_tick_while_it_runs_does_not_add_another() {
+        let store = tca::Store::new(feature(), signed_in());
+        store.send(playback_active(true));
+        store.send(playback_active(true));
+        store.send(playback_active(true));
+
+        let (ticks, most_from_one) = ticks_over_ten_periods(store).await;
+
+        assert!(
+            ticks >= 5,
+            "the tick is not running: {ticks} in ten periods"
+        );
+        assert!(
+            ticks <= most_from_one,
+            "{ticks} ticks, where one ticker makes at most {most_from_one}"
+        );
+    }
+
+    /// The way it happens in use: the scene is opened and closed while a
+    /// song plays. Each toggle asks for the tick again, and none of them
+    /// stops it, because the song still needs it.
+    #[tokio::test]
+    async fn toggling_the_scene_during_a_song_keeps_one_tick() {
+        let mut playing = signed_in();
+        playing.player.is_playing = true;
+        let store = tca::Store::new(feature(), playing);
+        store.send(playback_active(true));
+        for _ in 0..4 {
+            store.send(Action::ToggleScene);
+        }
+
+        let (ticks, most_from_one) = ticks_over_ten_periods(store).await;
+
+        assert!(
+            ticks >= 5,
+            "the tick is not running: {ticks} in ten periods"
+        );
+        assert!(
+            ticks <= most_from_one,
+            "{ticks} ticks, where one ticker makes at most {most_from_one}"
+        );
+    }
+
+    /// And it still stops when nothing needs it.
+    #[tokio::test]
+    async fn the_tick_stops_when_playback_does() {
+        let store = tca::Store::new(feature(), signed_in());
+        store.send(playback_active(true));
+        store.send(playback_active(true));
+        store.send(playback_active(false));
+
+        let (ticks, _) = ticks_over_ten_periods(store).await;
+
+        assert_eq!(ticks, 0, "ticking with nothing playing and no scene");
     }
 
     #[tokio::test]
