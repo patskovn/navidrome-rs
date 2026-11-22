@@ -23,7 +23,7 @@ serde_json = "1.0.151"
 simplelog = "0.12.2"
 spectrum-analyzer = "1.8.0"
 stream-download = "0.24.2"
-tca-rs = "0.2"
+tca-rs = "0.3"
 tokio = { version = "1.53.1", features = ["full"] }
 tui-textarea = { version = "0.8", package = "ratatui-textarea" }
 
